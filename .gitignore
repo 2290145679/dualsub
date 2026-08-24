@@ -1,0 +1,11 @@
+# 日志与缓存
+dualsub.log
+__pycache__/
+*.pyc
+settings.json
+*.bak
+# 临时/测试
+*.tmp.srt
+*.dual.srt
+*.dual.mkv
+tmp/

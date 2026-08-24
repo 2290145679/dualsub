@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DualSub - 双语字幕合并工具</title>
+<style>
+:root {
+    --bg: #0f1420; --panel: #1a2130; --panel2: #222b3d; --border: #2e3a52;
+    --text: #e6ebf4; --muted: #8b98b4; --accent: #4f8cff; --accent2: #2f6ad0;
+    --ok: #34c98a; --warn: #f0a63a; --err: #e5534b; --skip: #6b7894;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: var(--bg); color: var(--text); font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 14px; }
+.header { padding: 16px 24px; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+.header h1 { font-size: 18px; font-weight: 600; }
+.header .sub { color: var(--muted); font-size: 12px; }
+.wrap { max-width: 1200px; margin: 0 auto; padding: 20px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.card h2 { font-size: 15px; margin-bottom: 12px; color: var(--text); }
+.breadcrumb { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; margin-bottom: 12px; }
+.breadcrumb button { background: var(--panel2); color: var(--text); border: 1px solid var(--border); padding: 4px 10px; border-radius: 6px; cursor: pointer; }
+.breadcrumb button:hover { border-color: var(--accent); }
+.dir-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-bottom: 16px; }
+.dir-item { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+.dir-item:hover { border-color: var(--accent); }
+.dir-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+.dir-item .cnt { color: var(--muted); font-size: 12px; }
+.table { width: 100%; border-collapse: collapse; }
+.table th { text-align: left; padding: 8px 10px; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); font-size: 12px; }
+.table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.table tr:hover td { background: rgba(79,140,255,0.05); }
+.file-name { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; }
+.badge.ok { background: rgba(52,201,138,0.15); color: var(--ok); }
+.badge.done { background: rgba(52,201,138,0.25); color: var(--ok); }
+.badge.no { background: rgba(235,83,75,0.15); color: var(--err); }
+.badge.skip { background: rgba(107,120,148,0.2); color: var(--skip); }
+.badge.wait { background: rgba(240,166,58,0.15); color: var(--warn); }
+.btn { background: var(--accent2); color: #fff; border: none; padding: 8px 18px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+.btn:hover { background: var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn.gray { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+.btn.red { background: var(--err); }
+.toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.progress-wrap { display: none; margin-top: 16px; }
+.progress-bar { height: 18px; background: var(--panel2); border-radius: 9px; overflow: hidden; border: 1px solid var(--border); }
+.progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent2), var(--accent)); width: 0%; transition: width 0.3s; }
+.progress-text { margin-top: 8px; color: var(--muted); font-size: 13px; }
+.stat { display: flex; gap: 24px; margin-top: 12px; font-size: 14px; }
+.stat .n { font-size: 20px; font-weight: 700; }
+.stat .okc { color: var(--ok); } .stat .errc { color: var(--err); } .stat .skipc { color: var(--skip); }
+.result-list { max-height: 300px; overflow-y: auto; margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; }
+.result-item { padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: center; font-size: 13px; }
+.result-item .msg { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result-item .logs { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.empty { color: var(--muted); padding: 30px; text-align: center; }
+.loading { color: var(--muted); padding: 20px; text-align: center; }
+.checkbox { width: 16px; height: 16px; accent-color: var(--accent); }
+.hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.refresh-btn { background: none; border: 1px solid var(--border); color: var(--muted); padding: 4px 10px; border-radius: 6px; cursor: pointer; }
+.refresh-btn:hover { color: var(--text); border-color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="header">
+    <h1>🎬 DualSub</h1>
+    <span class="sub">影视库双语字幕合并工具 · 自动识别中英字幕轨 → 生成双语字幕</span>
+</div>
+
+<div class="wrap">
+
+<div class="card">
+    <h2>📂 选择目录</h2>
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+        <input type="text" id="pathInput" placeholder="直接输入影视目录路径，如 /vol2/1000/Emby观影库/欧美剧"
+               style="flex:1;padding:8px 12px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;">
+        <button class="btn" id="btnGo" style="white-space:nowrap;">🚀 转到</button>
+    </div>
+    <div class="breadcrumb" id="breadcrumb"></div>
+    <div id="dirGrid" class="dir-grid"></div>
+</div>
+
+<div class="card">
+    <h2>🎞️ 当前目录视频文件</h2>
+    <div class="toolbar">
+        <button class="btn" id="btnAll">☑ 全选</button>
+        <button class="btn gray" id="btnNone">☐ 全不选</button>
+        <button class="btn" id="btnStart">🚀 开始处理选中项</button>
+        <button class="btn gray" id="btnScan">🔍 扫描字幕</button>
+        <button class="btn red" id="btnCancel" disabled>⏹ 停止</button>
+        <button class="refresh-btn" id="btnRefresh">⟳ 刷新</button>
+        <button class="refresh-btn" id="btnLog">📋 日志</button>
+        <button class="refresh-btn" id="btnSettings">⚙ 设置</button>
+        <span id="fileCount" class="hint"></span>
+    </div>
+    <div class="toolbar" style="margin-bottom:8px;color:var(--muted);font-size:12px;" id="modeHint"></div>
+    <table class="table">
+        <thead><tr><th style="width:36px"></th><th>文件</th><th>中文字幕</th><th>英文字幕</th><th>状态</th><th style="width:70px">预览</th></tr></thead>
+        <tbody id="fileList"></tbody>
+    </table>
+    <div id="emptyHint" class="empty">该目录没有视频文件，或尚未加载</div>
+</div>
+
+<div class="card progress-wrap" id="progressCard">
+    <h2>⏳ 处理进度</h2>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-text" id="progressText">准备中...</div>
+    <div class="stat">
+        <div>成功 <span class="n okc" id="statOk">0</span></div>
+        <div>失败 <span class="n errc" id="statFail">0</span></div>
+        <div>跳过 <span class="n skipc" id="statSkip">0</span></div>
+        <div>总计 <span class="n" id="statTotal">0</span></div>
+    </div>
+    <div class="result-list" id="resultList"></div>
+</div>
+
+</div>
+
+<!-- 设置弹窗 -->
+<div id="settingsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:100;align-items:center;justify-content:center;">
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:24px;width:440px;max-width:92vw;">
+        <h2 style="margin-bottom:16px;">⚙ 设置</h2>
+
+        <div style="margin-bottom:14px;">
+            <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">默认目录（启动时自动打开）</label>
+            <div style="display:flex;gap:8px;">
+                <input type="text" id="setDefaultDir" placeholder="如 /vol2/1000/Emby观影库"
+                       style="flex:1;padding:8px 12px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);">
+            </div>
+            <div style="color:var(--muted);font-size:11px;margin-top:4px;">留空则不自动跳转；也可在输入框里填好后点「🚀 转到」时自动记忆</div>
+        </div>
+
+        <div style="margin-bottom:14px;">
+            <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">处理模式</label>
+            <select id="setMode" style="width:100%;padding:8px 12px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);">
+                <option value="srt">仅生成字幕文件（.dual.srt）</option>
+                <option value="mux">合并字幕回视频</option>
+                <option value="both">两者都做（字幕 + 合并回视频）</option>
+            </select>
+            <div style="color:var(--muted);font-size:11px;margin-top:4px;">"合并字幕回视频"的输出方式由下面的选项决定（覆盖原文件 / 生成新文件）</div>
+        </div>
+
+        <div style="margin-bottom:14px;">
+            <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">合并回视频的输出方式</label>
+            <select id="setOverwrite" style="width:100%;padding:8px 12px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);">
+                <option value="true">覆盖原视频文件（合并后原文件名不变）</option>
+                <option value="false">生成新文件 .dual.mkv（保留原文件）</option>
+            </select>
+            <div style="color:var(--muted);font-size:11px;margin-top:4px;">覆盖时若勾选"保留备份"，原文件会备份为 .bak</div>
+        </div>
+
+        <div style="margin-bottom:14px;">
+            <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">双语字幕顺序</label>
+            <select id="setOrder" style="width:100%;padding:8px 12px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);">
+                <option value="en_first">英文在上，中文在下</option>
+                <option value="zh_first">中文在上，英文在下</option>
+            </select>
+        </div>
+
+        <div style="margin-bottom:14px;">
+            <label style="display:block;margin-bottom:6px;color:var(--muted);font-size:13px;">自动监视目录（新影片入库自动生成双语字幕）</label>
+            <input type="text" id="setWatchDir" placeholder="如 /vol2/1000/Emby观影库（留空关闭自动监视）"
+                   style="width:100%;padding:8px 12px;background:var(--panel2);border:1px solid var(--border);border-radius:8px;color:var(--text);">
+            <div style="display:flex;align-items:center;gap:8px;margin-top:8px;">
+                <span style="color:var(--muted);font-size:12px;">扫描间隔：</span>
+                <input type="number" id="setWatchInterval" min="1" max="1440" value="30"
+                       style="width:70px;padding:6px 8px;background:var(--panel2);border:1px solid var(--border);border-radius:6px;color:var(--text);">
+                <span style="color:var(--muted);font-size:12px;">分钟</span>
+            </div>
+            <div style="color:var(--muted);font-size:11px;margin-top:4px;">会递归扫描该目录，发现含中英字幕轨且未生成 .dual 的新视频自动处理</div>
+        </div>
+
+        <div style="margin-bottom:18px;display:flex;align-items:center;gap:8px;">
+            <input type="checkbox" id="setBackup" style="width:16px;height:16px;accent-color:var(--accent);">
+            <label for="setBackup" style="color:var(--muted);font-size:13px;">合并回视频时保留原文件备份（.bak）</label>
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:10px;">
+            <button class="btn gray" onclick="closeSettings()">取消</button>
+            <button class="btn" onclick="saveSettings()">💾 保存</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const MEDIA_ROOT = "{{ media_root }}";
+let currentRel = "";
+let currentFiles = [];       // 当前目录文件 [{path,rel,zh,en,ready,...}]
+let selected = new Set();    // 选中的 rel
+let taskId = null;
+let pollTimer = null;
+let appSettings = { mode: "srt", backup: true, default_dir: "", order: "en_first", watch_dir: "", watch_interval: 30 };
+
+// ---------- 设置 ----------
+async function loadSettings() {
+    try {
+        const resp = await fetch("/api/settings");
+        const d = await resp.json();
+        if (!d.error) appSettings = Object.assign(appSettings, d);
+    } catch (e) {}
+    // 显示当前模式提示
+    const names = { srt: "仅生成字幕文件(.srt)", mux: "仅合并字幕回视频(.mkv)", both: "生成字幕 + 封回视频" };
+    const orderTxt = appSettings.order === "zh_first" ? "中文在上" : "英文在上";
+    let hint = `当前处理模式：${names[appSettings.mode] || "仅生成字幕文件"} · 双语顺序：${orderTxt}`;
+    if (appSettings.watch_dir) {
+        hint += ` · 🔴 自动监视：${appSettings.watch_dir} (每 ${appSettings.watch_interval} 分钟)`;
+    }
+    document.getElementById("modeHint").textContent = hint;
+    // 若设置了默认目录且当前未在浏览, 自动加载
+    if (appSettings.default_dir && !currentRel) {
+        loadTree(appSettings.default_dir);
+    }
+}
+
+function openSettings() {
+    document.getElementById("setDefaultDir").value = appSettings.default_dir || "";
+    document.getElementById("setMode").value = appSettings.mode || "srt";
+    document.getElementById("setBackup").checked = !!appSettings.backup;
+    document.getElementById("setOrder").value = appSettings.order || "en_first";
+    document.getElementById("setWatchDir").value = appSettings.watch_dir || "";
+    document.getElementById("setWatchInterval").value = appSettings.watch_interval || 30;
+    document.getElementById("setOverwrite").value = appSettings.overwrite ? "true" : "false";
+    document.getElementById("settingsModal").style.display = "flex";
+}
+
+function closeSettings() {
+    document.getElementById("settingsModal").style.display = "none";
+}
+
+async function saveSettings() {
+    const newDefault = document.getElementById("setDefaultDir").value.trim();
+    const val = {
+        default_dir: newDefault,
+        mode: document.getElementById("setMode").value,
+        backup: document.getElementById("setBackup").checked,
+        order: document.getElementById("setOrder").value,
+        watch_dir: document.getElementById("setWatchDir").value.trim(),
+        watch_interval: parseInt(document.getElementById("setWatchInterval").value) || 30,
+        overwrite: document.getElementById("setOverwrite").value === "true",
+    };
+    try {
+        const resp = await fetch("/api/settings", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(val),
+        });
+        const d = await resp.json();
+        if (d.error) { alert("保存失败: " + d.error); return; }
+        const prevDefault = appSettings.default_dir;
+        appSettings = Object.assign(appSettings, d);
+        closeSettings();
+        // 只有【默认目录输入框被修改】且与当前浏览目录不同时才跳转
+        const sameAsBefore = newDefault === prevDefault;
+        if (newDefault && !sameAsBefore && newDefault !== currentRel) {
+            loadTree(newDefault);
+        }
+        // 刷新提示 (不跳转)
+        loadSettings();
+        alert("设置已保存");
+    } catch (e) {
+        alert("保存失败: " + e);
+    }
+}
+
+document.getElementById("btnSettings").onclick = openSettings;
+
+// ---------- 目录浏览 ----------
+async function loadTree(rel) {
+    currentRel = rel || "";
+    const resp = await fetch("/api/tree?path=" + encodeURIComponent(currentRel));
+    const data = await resp.json();
+    if (data.error) { alert("目录错误: " + data.error); return; }
+    renderBreadcrumb(data);
+    renderDirs(data);
+    // 先 light 模式加载文件列表, 看是否有视频
+    await loadFiles(true);
+}
+
+function renderBreadcrumb(data) {
+    const bc = document.getElementById("breadcrumb");
+    bc.innerHTML = "";
+    const rootBtn = document.createElement("button");
+    rootBtn.textContent = "🏠 " + data.root;
+    rootBtn.onclick = () => loadTree("");
+    bc.appendChild(rootBtn);
+    if (data.rel) {
+        const parts = data.rel.split("/");
+        let acc = "";
+        for (const p of parts) {
+            acc = acc ? acc + "/" + p : p;
+            const b = document.createElement("button");
+            b.textContent = "› " + p;
+            b.onclick = () => loadTree(acc);
+            bc.appendChild(b);
+        }
+    }
+}
+
+function renderDirs(data) {
+    const grid = document.getElementById("dirGrid");
+    grid.innerHTML = "";
+    if (data.parent && data.rel) {
+        const up = document.createElement("div");
+        up.className = "dir-item";
+        up.innerHTML = `<span class="name">⬆ 上级目录</span>`;
+        up.onclick = () => loadTree(data.parent);
+        grid.appendChild(up);
+    }
+    for (const d of data.dirs) {
+        const item = document.createElement("div");
+        item.className = "dir-item";
+        item.innerHTML = `<span class="name">📁 ${d.name}</span><span class="cnt">${d.videos} 视频</span>`;
+        item.onclick = () => loadTree(d.rel);
+        grid.appendChild(item);
+    }
+    if (!data.dirs.length && !data.rel) {
+        grid.innerHTML = `<div class="empty">媒体根目录下没有子目录。请确认 Docker 挂载了影视库目录到 /media</div>`;
+    }
+}
+
+// ---------- 文件列表 ----------
+async function loadFiles(light) {
+    const tbody = document.getElementById("fileList");
+    const empty = document.getElementById("emptyHint");
+    tbody.innerHTML = `<tr><td colspan="6" class="loading">加载中...</td></tr>`;
+    empty.style.display = "none";
+    selected.clear();
+
+    // light=true 时走快速模式 (只列文件, 不探测字幕)
+    const url = light
+        ? "/api/scan?light=1&path=" + encodeURIComponent(currentRel)
+        : "/api/scan?path=" + encodeURIComponent(currentRel);
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data.error) {
+        tbody.innerHTML = `<tr><td colspan="6" class="empty">${data.error}</td></tr>`;
+        return;
+    }
+    currentFiles = data.videos || [];
+
+    if (data.light) {
+        // 快速模式: 若目录含视频文件, 自动进入完整扫描 (问题4)
+        if (currentFiles.length) {
+            // 自动完整扫描以显示字幕状态
+            return loadFiles(false);
+        }
+        // 无视频文件: 显示空目录
+        document.getElementById("fileCount").textContent = `共 ${data.count} 个视频`;
+        tbody.innerHTML = "";
+        empty.style.display = "block";
+        return;
+    }
+
+    // 完整模式: 显示字幕轨状态
+    document.getElementById("fileCount").textContent =
+        `共 ${data.count} 个视频，其中 ${data.ready} 个含中英双字幕可处理`;
+
+    if (!currentFiles.length) {
+        tbody.innerHTML = "";
+        empty.style.display = "block";
+        return;
+    }
+    tbody.innerHTML = "";
+    for (const f of currentFiles) {
+        const tr = document.createElement("tr");
+        const ready = f.ready;
+        const done = f.status && f.status !== "none";
+        // 用 DOM 方法创建单元格, 避免文件名特殊字符破坏 HTML
+        const ck = document.createElement("td");
+        const cb = document.createElement("input");
+        cb.type = "checkbox"; cb.className = "checkbox";
+        cb.dataset.rel = f.rel; cb.disabled = !ready || done; // 已处理的默认不可再勾选
+        ck.appendChild(cb);
+
+        const cname = document.createElement("td");
+        cname.className = "file-name";
+        cname.textContent = f.rel.split("/").pop();   // 显示文件名
+        cname.title = f.rel;
+
+        const czh = document.createElement("td");
+        czh.appendChild(makeBadge(f.zh !== null, f.zh !== null ? "✓ " + (f.zh_lang || "中文") : "无",
+                                  f.zh !== null ? "ok" : "no"));
+
+        const cen = document.createElement("td");
+        cen.appendChild(makeBadge(f.en !== null, f.en !== null ? "✓ " + (f.en_lang || "英文") : "无",
+                                  f.en !== null ? "ok" : "no"));
+
+        const cst = document.createElement("td");
+        // 根据处理状态显示
+        const statusMap = {
+            done_both: ["done", "✅ 双语(字幕+视频)"],
+            done_mux:  ["done", "✅ 已合并到视频"],
+            done_srt:  ["done", "✅ 已生成字幕"],
+            none:      ready ? ["ok", "可处理"] : ["skip", "缺轨"],
+        };
+        const [cls, txt] = statusMap[f.status] || statusMap.none;
+        cst.appendChild(makeBadge(cls !== "skip", txt, cls));
+
+        const cpv = document.createElement("td");
+        const pbtn = document.createElement("button");
+        pbtn.className = "refresh-btn"; pbtn.textContent = "👁";
+        pbtn.onclick = () => previewSub(f.rel);
+        cpv.appendChild(pbtn);
+
+        tr.append(ck, cname, czh, cen, cst, cpv);
+        tbody.appendChild(tr);
+    }
+    updateSelectedCount();
+}
+
+function fullScan() {
+    loadFiles(false);
+}
+
+function makeBadge(ok, text, cls) {
+    const s = document.createElement("span");
+    s.className = "badge " + cls;
+    s.textContent = text;
+    return s;
+}
+
+function collectSelected() {
+    // 返回选中文件的 {path, rel, zh, en}
+    const out = [];
+    for (const rel of selected) {
+        const f = currentFiles.find(x => x.rel === rel);
+        if (f && f.ready) out.push({ path: f.path, rel: f.rel, zh: f.zh, en: f.en });
+    }
+    return out;
+}
+
+function updateSelectedCount() {
+    const n = collectSelected().length;
+    document.getElementById("btnStart").textContent = `🚀 开始处理选中项 (${n})`;
+}
+
+// ---------- 选择操作 ----------
+document.getElementById("btnAll").onclick = () => {
+    selected.clear();
+    for (const f of currentFiles) if (f.ready) selected.add(f.rel);
+    syncCheckboxes(); updateSelectedCount();
+};
+document.getElementById("btnNone").onclick = () => {
+    selected.clear(); syncCheckboxes(); updateSelectedCount();
+};
+document.getElementById("fileList").addEventListener("change", (e) => {
+    if (e.target.classList.contains("checkbox")) {
+        const rel = e.target.dataset.rel;
+        if (e.target.checked) selected.add(rel); else selected.delete(rel);
+        updateSelectedCount();
+    }
+});
+function syncCheckboxes() {
+    document.querySelectorAll(".checkbox").forEach(cb => {
+        cb.checked = selected.has(cb.dataset.rel);
+    });
+}
+document.getElementById("btnRefresh").onclick = () => loadFiles();
+// 扫描字幕: 触发完整探测 (默认打开目录只用 light 模式, 不浪费资源)
+document.getElementById("btnScan").onclick = () => fullScan();
+
+// 查看日志
+document.getElementById("btnLog").onclick = async () => {
+    const resp = await fetch("/api/logs");
+    const data = await resp.json();
+    const win = window.open("", "_blank", "width=800,height=600");
+    if (!win) { alert("请允许弹出窗口查看日志"); return; }
+    win.document.write(`<html><head><meta charset="utf-8"><title>DualSub 日志</title>
+        <style>body{background:#111;color:#eee;font-family:monospace;font-size:12px;padding:12px;white-space:pre-wrap;}</style>
+        </head><body>${data.logs.replace(/</g,"&lt;").replace(/\n/g,"<br>")}</body></html>`);
+};
+
+// ---------- 字幕预览 ----------
+async function previewSub(rel) {
+    const f = currentFiles.find(x => x.rel === rel);
+    if (!f) return;
+    const track = f.zh !== null ? f.zh : f.en;
+    const resp = await fetch(`/api/preview?path=${encodeURIComponent(f.path)}&track=${track}`);
+    const data = await resp.json();
+    if (data.preview) {
+        alert("字幕预览:\n\n" + data.preview.slice(0, 1500));
+    } else if (data.error) {
+        alert("预览失败: " + data.error);
+    }
+}
+
+// ---------- 处理任务 ----------
+document.getElementById("btnStart").onclick = async () => {
+    const files = collectSelected();
+    if (!files.length) { alert("请先勾选可处理的文件（含中英双字幕轨）"); return; }
+    // 根据模式 + 输出方式, 动态生成确认文案
+    const m = appSettings.mode;
+    const ov = appSettings.overwrite;
+    let action;
+    if (m === "srt") {
+        action = "生成 <文件名>.dual.srt 字幕文件（不修改原视频）";
+    } else if (m === "mux") {
+        action = ov ? "将双语字幕合并回视频并【覆盖原文件】" : "生成新文件 <文件名>.dual.mkv（保留原文件）";
+    } else { // both
+        action = ov
+            ? "生成 .dual.srt + 将双语字幕合并回视频并【覆盖原文件】"
+            : "生成 .dual.srt + 生成新文件 .dual.mkv（保留原文件）";
+    }
+    if (!confirm(`确定处理 ${files.length} 个文件？\n将${action}。`)) return;
+
+    const resp = await fetch("/api/task/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ files, mode: appSettings.mode, order: appSettings.order, backup: appSettings.backup, overwrite: appSettings.overwrite })
+    });
+    const data = await resp.json();
+    if (data.error) { alert("启动失败: " + data.error); return; }
+    taskId = data.task_id;
+    document.getElementById("progressCard").style.display = "block";
+    document.getElementById("btnStart").disabled = true;
+    document.getElementById("btnCancel").disabled = false;
+    document.getElementById("resultList").innerHTML = "";
+    pollTimer = setInterval(pollTask, 800);
+};
+
+document.getElementById("btnCancel").onclick = async () => {
+    if (!taskId) return;
+    await fetch(`/api/task/${taskId}/cancel`, { method: "POST" });
+};
+
+async function pollTask() {
+    if (!taskId) return;
+    const resp = await fetch(`/api/task/${taskId}`);
+    const t = await resp.json();
+    if (t.error) { clearInterval(pollTimer); return; }
+
+    document.getElementById("progressFill").style.width = t.progress + "%";
+    document.getElementById("progressText").textContent =
+        `${t.done}/${t.total} · 当前: ${t.current || "-"}`;
+    document.getElementById("statOk").textContent = t.ok;
+    document.getElementById("statFail").textContent = t.fail;
+    document.getElementById("statSkip").textContent = t.skip;
+    document.getElementById("statTotal").textContent = t.total;
+
+    renderResults(t.results);
+
+    if (t.status === "done" || t.status === "cancelled") {
+        clearInterval(pollTimer);
+        document.getElementById("btnStart").disabled = false;
+        document.getElementById("btnCancel").disabled = true;
+        document.getElementById("progressText").textContent =
+            (t.status === "done" ? "✅ 处理完成" : "⏹ 已停止") +
+            ` · 成功 ${t.ok} / 失败 ${t.fail} / 跳过 ${t.skip}`;
+    }
+}
+
+function renderResults(results) {
+    const list = document.getElementById("resultList");
+    list.innerHTML = "";
+    for (const r of results.slice().reverse()) {
+        const cls = r.status === "ok" ? "ok" : r.status === "fail" ? "err" : "skip";
+        const label = r.status === "ok" ? "✓" : r.status === "fail" ? "✗" : "⏭";
+        const div = document.createElement("div");
+        div.className = "result-item";
+        div.innerHTML = `<span class="badge ${cls}">${label}</span>
+            <span>${r.name}</span>
+            <span class="msg">${r.message}</span>`;
+        if (r.logs && r.logs.length) {
+            const logs = document.createElement("div");
+            logs.className = "logs";
+            logs.textContent = r.logs.join(" · ");
+            div.appendChild(logs);
+        }
+        list.appendChild(div);
+    }
+}
+
+// ---------- 初始化 ----------
+document.getElementById("btnGo").onclick = () => {
+    const v = document.getElementById("pathInput").value.trim();
+    if (v) loadTree(v);
+};
+document.getElementById("pathInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") document.getElementById("btnGo").click();
+});
+
+// 页面加载: 先读取设置, 再决定打开哪个目录
+(async function init() {
+    await loadSettings();
+    // loadSettings 中若设置了 default_dir 会自动 loadTree 并完整扫描;
+    // 若无默认目录, 则打开根目录 light 模式
+    if (!currentRel) {
+        loadTree("");
+    }
+})();
+</script>
+</body>
+</html>
