@@ -109,7 +109,8 @@ class DualSub(_PluginBase):
     _backup = True           # 封回时是否备份原文件
     _overwrite = False       # 封回时是否覆盖原文件(默认False=生成.dual.mkv)
     _min_file_size = 0       # 触发的最小文件大小(MB), 0=不限
-    _skip_if_exists = True   # 已有.dual.srt时跳过
+    _skip_if_exists = True   # 已有双语字幕时跳过
+    _subtitle_suffix = ".zh-CN.srt"  # 外置双语字幕文件名后缀
     _scan_subdirs = True     # 手动执行时是否递归子目录
     _clear_history = False
     _browse_root = "/vol2/1000"  # 浏览页起始根目录(容器内绝对路径)
@@ -162,6 +163,8 @@ class DualSub(_PluginBase):
         except (TypeError, ValueError):
             self._min_file_size = 0
         self._skip_if_exists = config.get("skip_if_exists", True)
+        suffix = config.get("subtitle_suffix", ".zh-CN.srt") or ".zh-CN.srt"
+        self._subtitle_suffix = suffix if suffix in (".zh-CN.srt", ".dual.srt", ".chs.eng.srt") else ".zh-CN.srt"
         self._scan_subdirs = config.get("scan_subdirs", True)
         self._clear_history = config.get("clear_history", False)
         self._browse_root = config.get("browse_root", "") or "/vol2/1000"
@@ -256,8 +259,8 @@ class DualSub(_PluginBase):
             return False, str(e)
 
     def _ai_translate_missing(self, en_items: list, zh_items: list, logs: List[str]) -> list:
-        """翻译没有中文字幕时间轴重叠的英文条目, 返回新增中文条目。"""
-        if not self._ai_enabled or not self._ai_api_key or not self._ai_base_url:
+        """批量翻译没有中文字幕时间轴重叠的英文条目, 返回新增中文条目。"""
+        if not self._ai_enabled or not self._ai_api_key or not self._ai_base_url or not self._ai_model:
             return []
         missing = []
         for en in en_items:
@@ -266,17 +269,35 @@ class DualSub(_PluginBase):
                 missing.append(en)
         if not missing:
             return []
-        logs.append(f"AI补全中文字幕: {len(missing)} 条 ...")
-        translated = []
-        endpoint = self._ai_base_url + "/chat/completions"
-        for index, item in enumerate(missing, 1):
-            prompt = ("将下面的英文字幕翻译成自然、简洁的简体中文。只返回译文，不要解释，"
-                      "不要添加引号，不要保留序号或时间轴。保留说话人前缀和换行结构。\n\n" + item.text)
+
+        # 按请求字符数分批, 保留字幕原始顺序和时间轴在本地映射
+        batches, current, size = [], [], 0
+        for index, item in enumerate(missing):
+            entry = {"id": index, "text": item.text}
+            entry_size = len(item.text) + 40
+            if current and size + entry_size > 6000:
+                batches.append(current)
+                current, size = [], 0
+            current.append(entry)
+            size += entry_size
+        if current:
+            batches.append(current)
+
+        logs.append(f"AI补全中文字幕: {len(missing)} 条, 分 {len(batches)} 批 ...")
+        translated_by_id = {}
+        endpoint = self._ai_base_url.rstrip("/") + "/chat/completions"
+        for batch_index, batch in enumerate(batches, 1):
+            prompt = (
+                "把下面 JSON 数组中的每条英文影视字幕翻译成自然、简洁的简体中文。"
+                "必须只返回 JSON 数组，每项格式为 {\"id\":数字,\"translation\":\"译文\"}。"
+                "不要返回 Markdown、解释、序号或时间轴；id 必须原样保留。\n\n" +
+                json.dumps(batch, ensure_ascii=False)
+            )
             payload = {
                 "model": self._ai_model,
                 "temperature": 0.2,
                 "messages": [
-                    {"role": "system", "content": "你是专业影视字幕翻译，只翻译字幕文本。"},
+                    {"role": "system", "content": "你是专业影视字幕翻译，只翻译字幕文本并严格返回 JSON 数组。"},
                     {"role": "user", "content": prompt},
                 ],
             }
@@ -287,14 +308,28 @@ class DualSub(_PluginBase):
                     headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._ai_api_key}"},
                     method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=60) as resp:
+                with urllib.request.urlopen(req, timeout=120) as resp:
                     response = json.loads(resp.read().decode("utf-8"))
-                text = response.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-                if text:
-                    translated.append(SubtitleItem(item.start, item.end, text))
+                content = response.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                if content.startswith("```"):
+                    content = content.strip("`")
+                    if content.startswith("json"):
+                        content = content[4:].lstrip()
+                results = json.loads(content)
+                if isinstance(results, dict):
+                    results = results.get("translations", [])
+                for result in results or []:
+                    if isinstance(result, dict) and isinstance(result.get("id"), int) and result.get("translation"):
+                        translated_by_id[result["id"]] = result["translation"].strip()
             except Exception as e:
-                logs.append(f"AI补全第 {index} 条失败: {str(e)[:160]}")
-        logs.append(f"AI补全完成: 成功 {len(translated)}/{len(missing)} 条")
+                logs.append(f"AI补全第 {batch_index}/{len(batches)} 批失败: {str(e)[:160]}")
+
+        translated = []
+        for index, item in enumerate(missing):
+            text = translated_by_id.get(index)
+            if text:
+                translated.append(SubtitleItem(item.start, item.end, text))
+        logs.append(f"AI补全完成: 成功 {len(translated)}/{len(missing)} 条, API调用 {len(batches)} 次")
         return translated
 
     def generate_dual(self, video_path: str, zh_idx: int, en_idx: int,
@@ -769,7 +804,14 @@ class DualSub(_PluginBase):
         return result
 
     def _probe_video_item(self, p: Path) -> dict:
-        """探测单个视频文件: 大小/字幕轨/已生成状态"""
+        """探测单个视频文件: 大小/字幕轨/任务与产物状态"""
+        task_status = None
+        for task in (self._tasks or {}).values():
+            if task.get("video_file") == str(p):
+                status = task.get("status")
+                if status in (TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value):
+                    task_status = status
+                    break
         try:
             size = p.stat().st_size
         except Exception:
@@ -787,7 +829,11 @@ class DualSub(_PluginBase):
                         mixed = True
                         break
         status = "ready"
-        if has_dual:
+        if task_status == TaskStatus.IN_PROGRESS.value:
+            status = "processing"
+        elif task_status == TaskStatus.PENDING.value:
+            status = "queued"
+        elif has_dual:
             status = "done"
         elif (zh is None or en is None) and not mixed:
             status = "missing"
@@ -1644,7 +1690,13 @@ class DualSub(_PluginBase):
 
         # 视频行
         for v in videos:
-            if v["status"] == "done":
+            if v["status"] == "processing":
+                badge = {"text": "处理中", "color": "warning", "icon": "mdi-loading mdi-spin"}
+                can_process = False
+            elif v["status"] == "queued":
+                badge = {"text": "排队中", "color": "info", "icon": "mdi-clock-outline"}
+                can_process = False
+            elif v["status"] == "done":
                 badge = {"text": "已生成", "color": "success", "icon": "mdi-check-circle"}
                 can_process = False
             elif v["status"] == "missing":
