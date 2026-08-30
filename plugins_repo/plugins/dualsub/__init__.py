@@ -85,7 +85,7 @@ class DualSub(_PluginBase):
     # 主题色
     plugin_color = "#8d51f9"
     # 插件版本
-    plugin_version = "1.6"
+    plugin_version = "1.7"
     # 插件作者
     plugin_author = "wuzhennana"
     # 作者主页
@@ -119,6 +119,7 @@ class DualSub(_PluginBase):
     _ai_base_url = "https://api.openai.com/v1"
     _ai_api_key = ""
     _ai_model = "gpt-4o-mini"
+    _ai_models = []
 
     # 任务队列与消费线程(实例级, 在 init_plugin 中初始化)
     _task_queue = None
@@ -170,6 +171,7 @@ class DualSub(_PluginBase):
         self._ai_base_url = (config.get("ai_base_url", "https://api.openai.com/v1") or "").rstrip("/")
         self._ai_api_key = config.get("ai_api_key", "") or ""
         self._ai_model = config.get("ai_model", "gpt-4o-mini") or "gpt-4o-mini"
+        self._ai_models = config.get("ai_models", []) or []
 
         # 加载历史任务
         self._tasks = self.load_tasks()
@@ -913,7 +915,43 @@ class DualSub(_PluginBase):
                 "auth": "bear",
                 "description": "返回媒体库中的封面图片, path=图片绝对路径",
             },
+            {
+                "path": "/ai_models",
+                "endpoint": self.api_ai_models,
+                "methods": ["GET"],
+                "summary": "获取 AI 模型列表",
+                "auth": "bear",
+                "description": "从已保存的 OpenAI 兼容 API 获取模型列表",
+            },
         ]
+
+    def api_ai_models(self):
+        """从 OpenAI 兼容 API 获取模型列表并保存到配置。"""
+        if not self._ai_base_url or not self._ai_api_key:
+            return {"success": False, "message": "请先填写并保存 AI API 地址和 API Key"}
+        try:
+            endpoint = self._ai_base_url.rstrip("/") + "/models"
+            req = urllib.request.Request(
+                endpoint,
+                headers={"Accept": "application/json", "Authorization": f"Bearer {self._ai_api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            items = payload.get("data", []) if isinstance(payload, dict) else payload
+            models = []
+            for item in items or []:
+                model_id = item.get("id") if isinstance(item, dict) else str(item)
+                if model_id and model_id not in models:
+                    models.append(model_id)
+            models.sort()
+            if not models:
+                return {"success": False, "message": "接口返回的模型列表为空"}
+            self._ai_models = models
+            self.update_config(self._build_config())
+            return {"success": True, "message": f"已获取 {len(models)} 个模型", "models": models}
+        except Exception as e:
+            logger.error(f"[DualSub] 获取 AI 模型失败: {e}")
+            return {"success": False, "message": f"获取模型失败: {str(e)[:200]}"}
 
     def api_browse(self, path: str = ""):
         """前端点'进入目录'按钮调用: 更新当前浏览路径, 前端 onAction 自动重载 get_page"""
@@ -1038,6 +1076,7 @@ class DualSub(_PluginBase):
             "ai_base_url": self._ai_base_url,
             "ai_api_key": self._ai_api_key,
             "ai_model": self._ai_model,
+            "ai_models": self._ai_models,
         }
 
 
@@ -1377,15 +1416,38 @@ class DualSub(_PluginBase):
                                 'component': 'VCol',
                                 'props': {'cols': 12, 'md': 4},
                                 'content': [{
-                                    'component': 'VTextField',
+                                    'component': 'VCombobox',
                                     'props': {
                                         'model': 'ai_model',
                                         'label': 'AI 模型',
-                                        'placeholder': 'gpt-4o-mini'
+                                        'items': self._ai_models or ['gpt-4o-mini'],
+                                        'hint': '先保存 API 地址和 Key，再点击获取模型；也可直接填写模型名'
                                     }
                                 }]
                             }
                         ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [{
+                            'component': 'VCol',
+                            'props': {'cols': 12},
+                            'content': [{
+                                'component': 'VBtn',
+                                'props': {
+                                    'color': 'secondary',
+                                    'variant': 'tonal',
+                                    'prepend-icon': 'mdi-cloud-download-outline'
+                                },
+                                'text': '获取模型列表',
+                                'events': {
+                                    'click': {
+                                        'api': 'plugin/DualSub/ai_models',
+                                        'method': 'get'
+                                    }
+                                }
+                            }]
+                        }]
                     },
                     # 说明
                     {
@@ -1431,6 +1493,7 @@ class DualSub(_PluginBase):
             "ai_base_url": "https://api.openai.com/v1",
             "ai_api_key": "",
             "ai_model": "gpt-4o-mini",
+            "ai_models": [],
         }
 
     def get_page(self) -> List[dict]:
