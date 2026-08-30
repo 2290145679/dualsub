@@ -1,6 +1,6 @@
 {
   "DualSub": {
-    "version": "1.6",
+    "version": "1.7",
     "v2": true,
     "level": 1,
     "description": "自动合并影片内嵌中英字幕轨为上下双行双语字幕（生成.dual.srt或封回MKV）。支持入库自动执行，也可在插件详情页浏览媒体库并勾选已有视频处理。"
