@@ -118,7 +118,7 @@ class DualSub(_PluginBase):
     _ai_enabled = False       # 英文有、中文缺失时用 AI 补全
     _ai_base_url = "https://api.openai.com/v1"
     _ai_api_key = ""
-    _ai_model = "gpt-4o-mini"
+    _ai_model = ""
     _ai_models = []
 
     # 任务队列与消费线程(实例级, 在 init_plugin 中初始化)
@@ -170,7 +170,7 @@ class DualSub(_PluginBase):
         self._ai_enabled = bool(config.get("ai_enabled", False))
         self._ai_base_url = (config.get("ai_base_url", "https://api.openai.com/v1") or "").rstrip("/")
         self._ai_api_key = config.get("ai_api_key", "") or ""
-        self._ai_model = config.get("ai_model", "gpt-4o-mini") or "gpt-4o-mini"
+        self._ai_model = config.get("ai_model", "") or ""
         self._ai_models = config.get("ai_models", []) or []
 
         # 加载历史任务
@@ -1420,34 +1420,12 @@ class DualSub(_PluginBase):
                                     'props': {
                                         'model': 'ai_model',
                                         'label': 'AI 模型',
-                                        'items': self._ai_models or ['gpt-4o-mini'],
-                                        'hint': '先保存 API 地址和 Key，再点击获取模型；也可直接填写模型名'
+                                        'items': self._ai_models,
+                                        'hint': '先保存 API 地址和 Key，再到插件详情页点击“获取 AI 模型列表”；获取后重新打开配置选择模型'
                                     }
                                 }]
                             }
                         ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [{
-                            'component': 'VCol',
-                            'props': {'cols': 12},
-                            'content': [{
-                                'component': 'VBtn',
-                                'props': {
-                                    'color': 'secondary',
-                                    'variant': 'tonal',
-                                    'prepend-icon': 'mdi-cloud-download-outline'
-                                },
-                                'text': '获取模型列表',
-                                'events': {
-                                    'click': {
-                                        'api': 'plugin/DualSub/ai_models',
-                                        'method': 'get'
-                                    }
-                                }
-                            }]
-                        }]
                     },
                     # 说明
                     {
@@ -1492,7 +1470,7 @@ class DualSub(_PluginBase):
             "ai_enabled": False,
             "ai_base_url": "https://api.openai.com/v1",
             "ai_api_key": "",
-            "ai_model": "gpt-4o-mini",
+            "ai_model": "",
             "ai_models": [],
         }
 
@@ -1506,6 +1484,23 @@ class DualSub(_PluginBase):
                 "component": "div",
                 "props": {"class": "mb-3"},
                 "content": [
+                    {
+                        "component": "VBtn",
+                        "props": {
+                            "color": "secondary",
+                            "variant": "tonal",
+                            "size": "small",
+                            "prepend-icon": "mdi-cloud-download-outline",
+                            "class": "me-3"
+                        },
+                        "text": "获取 AI 模型列表",
+                        "events": {
+                            "click": {
+                                "api": "plugin/DualSub/ai_models",
+                                "method": "get"
+                            }
+                        }
+                    },
                     {
                         "component": "VBtnToggle",
                         "props": {
