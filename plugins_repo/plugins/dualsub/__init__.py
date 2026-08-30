@@ -31,7 +31,7 @@ from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType, NotificationType
 
-from .merge_dual import parse_srt, merge_dual, render_srt, compact_text, split_mixed, dedup_overlap
+from .merge_dual import parse_srt, merge_dual, render_srt, compact_text, split_mixed, dedup_overlap, SubtitleItem
 
 
 # ---------------- 常量 ----------------
@@ -85,7 +85,7 @@ class DualSub(_PluginBase):
     # 主题色
     plugin_color = "#8d51f9"
     # 插件版本
-    plugin_version = "1.5"
+    plugin_version = "1.6"
     # 插件作者
     plugin_author = "wuzhennana"
     # 作者主页
@@ -115,6 +115,10 @@ class DualSub(_PluginBase):
     _browse_root = "/vol2/1000"  # 浏览页起始根目录(容器内绝对路径)
     _browse_path = ""         # 当前浏览的目录路径(运行时状态, 非持久配置)
     _page_tab = "browse"      # 浏览页当前 Tab: browse | history
+    _ai_enabled = False       # 英文有、中文缺失时用 AI 补全
+    _ai_base_url = "https://api.openai.com/v1"
+    _ai_api_key = ""
+    _ai_model = "gpt-4o-mini"
 
     # 任务队列与消费线程(实例级, 在 init_plugin 中初始化)
     _task_queue = None
@@ -162,6 +166,10 @@ class DualSub(_PluginBase):
         self._browse_root = config.get("browse_root", "") or "/vol2/1000"
         self._browse_path = config.get("browse_path", "") or self._browse_root
         self._page_tab = config.get("page_tab", "browse")
+        self._ai_enabled = bool(config.get("ai_enabled", False))
+        self._ai_base_url = (config.get("ai_base_url", "https://api.openai.com/v1") or "").rstrip("/")
+        self._ai_api_key = config.get("ai_api_key", "") or ""
+        self._ai_model = config.get("ai_model", "gpt-4o-mini") or "gpt-4o-mini"
 
         # 加载历史任务
         self._tasks = self.load_tasks()
@@ -245,6 +253,48 @@ class DualSub(_PluginBase):
         except Exception as e:
             return False, str(e)
 
+    def _ai_translate_missing(self, en_items: list, zh_items: list, logs: List[str]) -> list:
+        """翻译没有中文字幕时间轴重叠的英文条目, 返回新增中文条目。"""
+        if not self._ai_enabled or not self._ai_api_key or not self._ai_base_url:
+            return []
+        missing = []
+        for en in en_items:
+            has_zh = any(min(en.end, zh.end) - max(en.start, zh.start) > 0 for zh in zh_items)
+            if not has_zh and en.text and en.text.strip():
+                missing.append(en)
+        if not missing:
+            return []
+        logs.append(f"AI补全中文字幕: {len(missing)} 条 ...")
+        translated = []
+        endpoint = self._ai_base_url + "/chat/completions"
+        for index, item in enumerate(missing, 1):
+            prompt = ("将下面的英文字幕翻译成自然、简洁的简体中文。只返回译文，不要解释，"
+                      "不要添加引号，不要保留序号或时间轴。保留说话人前缀和换行结构。\n\n" + item.text)
+            payload = {
+                "model": self._ai_model,
+                "temperature": 0.2,
+                "messages": [
+                    {"role": "system", "content": "你是专业影视字幕翻译，只翻译字幕文本。"},
+                    {"role": "user", "content": prompt},
+                ],
+            }
+            try:
+                req = urllib.request.Request(
+                    endpoint,
+                    data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {self._ai_api_key}"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    response = json.loads(resp.read().decode("utf-8"))
+                text = response.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                if text:
+                    translated.append(SubtitleItem(item.start, item.end, text))
+            except Exception as e:
+                logs.append(f"AI补全第 {index} 条失败: {str(e)[:160]}")
+        logs.append(f"AI补全完成: 成功 {len(translated)}/{len(missing)} 条")
+        return translated
+
     def generate_dual(self, video_path: str, zh_idx: int, en_idx: int,
                       out_path: Path, order: str = "en_first") -> Tuple[bool, Any, List[str]]:
         """提取中英轨并合并为双语 SRT。返回 (ok, detail, logs)。
@@ -258,11 +308,15 @@ class DualSub(_PluginBase):
         zh_srt = out_path.with_suffix(".zh.tmp.srt")
         en_srt = out_path.with_suffix(".en.tmp.srt")
         try:
-            logs.append(f"提取中文字幕轨 #{zh_idx} ...")
-            ok, err = self.extract_subtitle(video_path, zh_idx, zh_srt)
-            if not ok:
-                return False, err, logs
-            zh_items = parse_srt(zh_srt.read_bytes())
+            if zh_idx is not None:
+                logs.append(f"提取中文字幕轨 #{zh_idx} ...")
+                ok, err = self.extract_subtitle(video_path, zh_idx, zh_srt)
+                if not ok:
+                    return False, err, logs
+                zh_items = parse_srt(zh_srt.read_bytes())
+            else:
+                zh_items = []
+                logs.append("未找到中文字幕轨, 准备使用 AI 补全 ...")
 
             if en_idx is not None:
                 # 双轨模式
@@ -271,7 +325,8 @@ class DualSub(_PluginBase):
                 if not ok:
                     return False, err, logs
                 en_items = parse_srt(en_srt.read_bytes())
-                logs.append(f"合并双语字幕 ({'英文在上' if order == 'en_first' else '中文在上'}) ...")
+                zh_items.extend(self._ai_translate_missing(en_items, zh_items, logs))
+                logs.append(f"合并双语字幕 ({'英文在上' if order == 'en_first' else '中文在下'}) ...")
                 merged, stats = merge_dual(zh_items, en_items, order=order, max_lines=2)
             else:
                 # 单轨中英混合模式: 从同一条轨里按行分离中英
@@ -385,7 +440,7 @@ class DualSub(_PluginBase):
         with self._file_lock(video_path):
             zh, en = self.probe_zh_en_tracks(video_path)
             # 没有独立中英双轨时, 尝试单轨中英混合
-            if zh is None or en is None:
+            if (zh is None or en is None) and not (zh is None and en is not None and self._ai_enabled):
                 probe = self.probe_subtitles(video_path)
                 mixed_idx = None
                 if "tracks" in probe:
@@ -979,6 +1034,10 @@ class DualSub(_PluginBase):
             "browse_root": self._browse_root,
             "browse_path": self._browse_path,
             "page_tab": self._page_tab,
+            "ai_enabled": self._ai_enabled,
+            "ai_base_url": self._ai_base_url,
+            "ai_api_key": self._ai_api_key,
+            "ai_model": self._ai_model,
         }
 
 
@@ -1266,6 +1325,68 @@ class DualSub(_PluginBase):
                             }
                         ]
                     },
+                    # AI 字幕补全
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 4},
+                                'content': [{
+                                    'component': 'VSwitch',
+                                    'props': {
+                                        'model': 'ai_enabled',
+                                        'label': 'AI补全缺失中文字幕',
+                                        'hint': '英文有字幕但中文缺失时，自动调用 AI 翻译补全'
+                                    }
+                                }]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 8},
+                                'content': [{
+                                    'component': 'VTextField',
+                                    'props': {
+                                        'model': 'ai_base_url',
+                                        'label': 'AI API 地址',
+                                        'placeholder': 'https://api.openai.com/v1',
+                                        'hint': '支持 OpenAI 兼容接口，填写到 /v1，不要填 /chat/completions'
+                                    }
+                                }]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 8},
+                                'content': [{
+                                    'component': 'VTextField',
+                                    'props': {
+                                        'model': 'ai_api_key',
+                                        'label': 'AI API Key',
+                                        'type': 'password',
+                                        'placeholder': 'sk-...',
+                                        'hint': '仅保存在 MoviePilot 插件配置中'
+                                    }
+                                }]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 4},
+                                'content': [{
+                                    'component': 'VTextField',
+                                    'props': {
+                                        'model': 'ai_model',
+                                        'label': 'AI 模型',
+                                        'placeholder': 'gpt-4o-mini'
+                                    }
+                                }]
+                            }
+                        ]
+                    },
                     # 说明
                     {
                         'component': 'VRow',
@@ -1306,6 +1427,10 @@ class DualSub(_PluginBase):
             "browse_root": "/vol2/1000",
             "browse_path": "",
             "page_tab": "browse",
+            "ai_enabled": False,
+            "ai_base_url": "https://api.openai.com/v1",
+            "ai_api_key": "",
+            "ai_model": "gpt-4o-mini",
         }
 
     def get_page(self) -> List[dict]:
