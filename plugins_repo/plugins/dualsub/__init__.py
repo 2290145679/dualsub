@@ -462,7 +462,11 @@ class DualSub(_PluginBase):
             if not ok:
                 return TaskStatus.FAILED.value, f"生成失败: {detail}"
             msgs = [f"已生成 {srt_out.name}"]
-            if self._mode in ("mux", "both"):
+            # 将 AI 补全统计带到任务历史和通知中，便于确认本次是否调用过 AI
+            ai_result = next((log for log in logs if log.startswith("AI补全完成:")), None)
+            if ai_result:
+                msgs.append(ai_result)
+            if self._mode in ("mux", "both"): 
                 ok2, out2, logs2 = self.mux_into_video(
                     str(video), str(srt_out), backup=self._backup, overwrite=self._overwrite)
                 if ok2:
