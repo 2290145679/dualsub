@@ -266,3 +266,43 @@ def render_srt(items):
     for idx, item in enumerate(items, 1):
         lines.append(f"{idx}\n{_fmt(item.start)} --> {_fmt(item.end)}\n{item.text}\n")
     return "\n".join(lines)
+
+
+def render_ass(items):
+    """渲染带中英不同颜色和黑色描边的 ASS 字幕。"""
+    header = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: English,Arial,46,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1,2,60,60,45,1
+Style: Chinese,Microsoft YaHei,46,&H0000FFFF,&H0000FFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1,2,60,60,45,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    lines = [header]
+    for item in items:
+        start = _ass_time(item.start)
+        end = _ass_time(item.end)
+        for text in (item.text or "").splitlines() or [""]:
+            clean = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+            style = "Chinese" if _has_cjk(text) else "English"
+            lines.append(f"Dialogue: 0,{start},{end},{style},,0,0,0,,{clean}")
+    return "\n".join(lines) + "\n"
+
+
+def _ass_time(sec):
+    """ASS 时间格式: H:MM:SS.cc"""
+    sec = max(0, float(sec))
+    total_cs = int(round(sec * 100))
+    cs = total_cs % 100
+    total_s = total_cs // 100
+    s = total_s % 60
+    total_m = total_s // 60
+    m = total_m % 60
+    h = total_m // 60
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
