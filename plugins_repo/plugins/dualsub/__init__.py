@@ -2,7 +2,7 @@
 """DualSub - 影视库双语字幕合并插件 (MoviePilot V2)
 
 监听媒体入库事件, 自动把影片内嵌的中英字幕轨合并为"上下双行"双语字幕。
-- 生成 <文件名>.dual.srt 到影片同目录 (不修改原文件)
+- 生成 <文件名>.zh-CN.ass 到影片同目录 (不修改原文件)
 - 可选: 用 ffmpeg 把双语字幕封回 MKV (视频/音频 copy 不重编码)
 - 支持手动批量处理指定目录
 """
@@ -31,7 +31,7 @@ from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType, NotificationType
 
-from .merge_dual import parse_srt, merge_dual, render_srt, compact_text, split_mixed, dedup_overlap, SubtitleItem
+from .merge_dual import parse_srt, merge_dual, render_srt, render_ass, compact_text, split_mixed, dedup_overlap, SubtitleItem
 
 
 # ---------------- 常量 ----------------
@@ -110,7 +110,7 @@ class DualSub(_PluginBase):
     _overwrite = False       # 封回时是否覆盖原文件(默认False=生成.dual.mkv)
     _min_file_size = 0       # 触发的最小文件大小(MB), 0=不限
     _skip_if_exists = True   # 已有双语字幕时跳过
-    _subtitle_suffix = ".zh-CN.srt"  # 外置双语字幕文件名后缀
+    _subtitle_suffix = ".zh-CN.ass"  # 外置双语字幕文件名后缀
     _scan_subdirs = True     # 手动执行时是否递归子目录
     _clear_history = False
     _browse_root = "/vol2/1000"  # 浏览页起始根目录(容器内绝对路径)
@@ -163,8 +163,8 @@ class DualSub(_PluginBase):
         except (TypeError, ValueError):
             self._min_file_size = 0
         self._skip_if_exists = config.get("skip_if_exists", True)
-        suffix = config.get("subtitle_suffix", ".zh-CN.srt") or ".zh-CN.srt"
-        self._subtitle_suffix = suffix if suffix in (".zh-CN.srt", ".dual.srt", ".chs.eng.srt") else ".zh-CN.srt"
+        suffix = config.get("subtitle_suffix", ".zh-CN.ass") or ".zh-CN.ass"
+        self._subtitle_suffix = suffix if suffix in (".zh-CN.ass", ".zh-CN.srt", ".dual.srt") else ".zh-CN.ass"
         self._scan_subdirs = config.get("scan_subdirs", True)
         self._clear_history = config.get("clear_history", False)
         self._browse_root = config.get("browse_root", "") or "/vol2/1000"
@@ -374,7 +374,10 @@ class DualSub(_PluginBase):
                 logs.append(f"单轨中英混合, 分离出中文 {len(split_zh)} 条 / 英文 {len(split_en)} 条 ...")
                 merged, stats = merge_dual(split_zh, split_en, order=order, max_lines=2)
             merged = dedup_overlap(merged)
-            out_path.write_text(render_srt(merged), encoding="utf-8")
+            if out_path.suffix.lower() == ".ass":
+                out_path.write_text(render_ass(merged), encoding="utf-8-sig")
+            else:
+                out_path.write_text(render_srt(merged), encoding="utf-8")
             logs.append(f"完成: 生成 {out_path.name} ({stats['total']} 条)")
             return True, stats, logs
         except Exception as e:
@@ -406,11 +409,12 @@ class DualSub(_PluginBase):
                     tmp_out = video.with_name(video.stem + f".dual.{int(time.time())}.mkv")
                 final_out = tmp_out
 
+            sub_codec = "ass" if str(srt_path).lower().endswith(".ass") else "srt"
             cmd = [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                 "-i", str(video), "-i", str(srt_path),
                 "-map", "0:v", "-map", "0:a", "-map", "1:0",
-                "-c:v", "copy", "-c:a", "copy", "-c:s", "srt",
+                "-c:v", "copy", "-c:a", "copy", "-c:s", sub_codec,
                 "-metadata:s:s:0", "title=中英双语",
                 "-metadata:s:s:0", "language=chi",
                 "-disposition:s:0", "default",
@@ -447,14 +451,23 @@ class DualSub(_PluginBase):
                 self._file_locks[path] = threading.Lock()
             return self._file_locks[path]
 
+    def _subtitle_path(self, video_path: str) -> Path:
+        """返回当前配置对应的外置双语字幕路径。"""
+        video = Path(video_path)
+        return video.with_name(video.stem + self._subtitle_suffix)
+
+    def _has_subtitle_product(self, video_path: str) -> bool:
+        """检查当前或旧版外置双语字幕产物。"""
+        video = Path(video_path)
+        suffixes = {self._subtitle_suffix, ".zh-CN.ass", ".zh-CN.srt", ".dual.srt"}
+        return any(video.with_name(video.stem + suffix).exists() for suffix in suffixes)
+
     def _should_skip(self, video_path: str) -> bool:
         """是否已有双语字幕产物, 需跳过"""
         video = Path(video_path)
-        if self._skip_if_exists:
-            if video.with_name(video.stem + ".dual.srt").exists():
-                return True
-            if video.with_name(video.stem + ".dual.mkv").exists():
-                return True
+        if self._skip_if_exists and (self._has_subtitle_product(video_path) or
+                                     video.with_name(video.stem + ".dual.mkv").exists()):
+            return True
         return False
 
     def process_video(self, video_path: str) -> Tuple[str, str]:
@@ -492,7 +505,7 @@ class DualSub(_PluginBase):
                 logger.info(f"[DualSub] 处理: {video.name} (单轨中英混合 #{zh} 模式={self._mode})")
             else:
                 logger.info(f"[DualSub] 处理: {video.name} (中轨={zh} 英轨={en} 模式={self._mode})")
-            srt_out = video.with_name(video.stem + ".dual.srt")
+            srt_out = self._subtitle_path(video_path)
             ok, detail, logs = self.generate_dual(str(video), zh, en, srt_out, order=self._order)
             if not ok:
                 return TaskStatus.FAILED.value, f"生成失败: {detail}"
@@ -633,11 +646,8 @@ class DualSub(_PluginBase):
                     return False
                 if status == TaskStatus.COMPLETED.value:
                     # 已完成: 检查产物文件是否还在
-                    video = Path(video_file)
-                    has_product = (
-                        video.with_name(video.stem + ".dual.srt").exists()
-                        or video.with_name(video.stem + ".dual.mkv").exists()
-                    )
+                    has_product = (self._has_subtitle_product(video_file) or
+                                   Path(video_file).with_name(Path(video_file).stem + ".dual.mkv").exists())
                     if has_product:
                         logger.info(f"[DualSub] 任务已完成且产物存在, 跳过: {video_file}")
                         return False
@@ -817,7 +827,7 @@ class DualSub(_PluginBase):
         except Exception:
             size = 0
         zh, en = self.probe_zh_en_tracks(str(p))
-        has_dual = p.with_name(p.stem + ".dual.srt").exists() or \
+        has_dual = self._has_subtitle_product(str(p)) or \
             p.with_name(p.stem + ".dual.mkv").exists()
         # 单轨中英混合轨也视为可处理
         mixed = False
@@ -1122,6 +1132,7 @@ class DualSub(_PluginBase):
             "browse_root": self._browse_root,
             "browse_path": self._browse_path,
             "page_tab": self._page_tab,
+            "subtitle_suffix": self._subtitle_suffix,
             "ai_enabled": self._ai_enabled,
             "ai_base_url": self._ai_base_url,
             "ai_api_key": self._ai_api_key,
@@ -1325,10 +1336,29 @@ class DualSub(_PluginBase):
                                             'model': 'mode',
                                             'label': '处理模式',
                                             'items': [
-                                                {'title': '仅生成 .dual.srt (推荐)', 'value': 'srt'},
+                                                {'title': '仅生成字幕文件 (推荐)', 'value': 'srt'},
                                                 {'title': '仅封回 MKV', 'value': 'mux'},
-                                                {'title': '生成 srt + 封回 MKV', 'value': 'both'}
+                                                {'title': '生成字幕 + 封回 MKV', 'value': 'both'}
                                             ]
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 4},
+                                'content': [
+                                    {
+                                        'component': 'VSelect',
+                                        'props': {
+                                            'model': 'subtitle_suffix',
+                                            'label': '字幕格式',
+                                            'items': [
+                                                {'title': '彩色 ASS (中英不同颜色+描边)', 'value': '.zh-CN.ass'},
+                                                {'title': '普通 SRT', 'value': '.zh-CN.srt'},
+                                                {'title': '旧版 .dual.srt', 'value': '.dual.srt'}
+                                            ],
+                                            'hint': 'ASS 格式飞牛识别为中文且带颜色描边; SRT 为纯文本'
                                         }
                                     }
                                 ]
@@ -1490,7 +1520,7 @@ class DualSub(_PluginBase):
                                         'props': {
                                             'type': 'info',
                                             'variant': 'tonal',
-                                            'text': '插件依赖容器内的 ffmpeg/ffprobe。路径请填容器内绝对路径(如 /vol2/1000/Emby入库)。生成 .dual.srt 不修改原视频; 封回 MKV 时视频/音频流为 copy 不重编码。'
+                                            'text': '插件依赖容器内的 ffmpeg/ffprobe。路径请填容器内绝对路径(如 /vol2/1000/Emby入库)。生成 .zh-CN.ass 或 .zh-CN.srt 不修改原视频; 封回 MKV 时视频/音频流为 copy 不重编码。'
                                         }
                                     }
                                 ]
@@ -1517,6 +1547,7 @@ class DualSub(_PluginBase):
             "browse_root": "/vol2/1000",
             "browse_path": "",
             "page_tab": "browse",
+            "subtitle_suffix": ".zh-CN.ass",
             "ai_enabled": False,
             "ai_base_url": "https://api.openai.com/v1",
             "ai_api_key": "",
