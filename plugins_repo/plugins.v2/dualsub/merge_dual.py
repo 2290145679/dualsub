@@ -288,8 +288,9 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: English,Arial,{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{outline},1,2,60,60,{margin_v},1
-Style: Chinese,Microsoft YaHei,{font_size},&H0000FFFF,&H0000FFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{outline},1,2,60,60,{margin_v},1
+Style: Default,Microsoft YaHei,{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{outline},1,2,60,60,{margin_v},1
+Style: English,Arial,{font_size},&H0000FFFF,&H0000FFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{outline},1,2,60,60,{margin_v},1
+Style: Chinese,Microsoft YaHei,{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{outline},1,2,60,60,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -298,10 +299,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for item in items:
         start = _ass_time(item.start)
         end = _ass_time(item.end)
+        # 同一时间段的中英文放在同一个 Dialogue, 用 \N 换行 + \r 样式切换
+        # 顺序由 item.text 的行序决定: 第一行在上, 第二行在下
+        parts = []
         for text in (item.text or "").splitlines() or [""]:
             clean = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
-            style = "Chinese" if _has_cjk(text) else "English"
-            lines.append(f"Dialogue: 0,{start},{end},{style},,0,0,0,,{clean}")
+            if _has_cjk(text):
+                parts.append(f"{{\\rChinese}}{clean}")
+            else:
+                parts.append(f"{{\\rEnglish}}{clean}")
+        combined = "\\N".join(parts)
+        lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{combined}")
     return "\n".join(lines) + "\n"
 
 
