@@ -332,6 +332,23 @@ class DualSub(_PluginBase):
         logs.append(f"AI补全完成: 成功 {len(translated)}/{len(missing)} 条, API调用 {len(batches)} 次")
         return translated
 
+    def probe_video_resolution(self, video_path: str) -> Tuple[int, int]:
+        """用 ffprobe 探测视频分辨率, 返回 (width, height)"""
+        try:
+            r = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                 "-show_entries", "stream=width,height",
+                 "-of", "csv=p=0", str(video_path)],
+                capture_output=True, text=True, timeout=30,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                parts = r.stdout.strip().split(",")
+                if len(parts) >= 2:
+                    return int(parts[0]), int(parts[1])
+        except Exception:
+            pass
+        return 1920, 1080
+
     def generate_dual(self, video_path: str, zh_idx: int, en_idx: int,
                       out_path: Path, order: str = "en_first") -> Tuple[bool, Any, List[str]]:
         """提取中英轨并合并为双语 SRT。返回 (ok, detail, logs)。
@@ -375,7 +392,9 @@ class DualSub(_PluginBase):
                 merged, stats = merge_dual(split_zh, split_en, order=order, max_lines=2)
             merged = dedup_overlap(merged)
             if out_path.suffix.lower() == ".ass":
-                out_path.write_text(render_ass(merged), encoding="utf-8-sig")
+                vw, vh = self.probe_video_resolution(video_path)
+                logs.append(f"视频分辨率: {vw}x{vh}")
+                out_path.write_text(render_ass(merged, video_width=vw, video_height=vh), encoding="utf-8-sig")
             else:
                 out_path.write_text(render_srt(merged), encoding="utf-8")
             logs.append(f"完成: 生成 {out_path.name} ({stats['total']} 条)")
