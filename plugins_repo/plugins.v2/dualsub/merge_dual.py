@@ -268,18 +268,28 @@ def render_srt(items):
     return "\n".join(lines)
 
 
-def render_ass(items):
-    """渲染带中英不同颜色和黑色描边的 ASS 字幕。"""
-    header = """[Script Info]
+def render_ass(items, video_width=1920, video_height=1080):
+    """渲染带中英不同颜色和黑色描边的 ASS 字幕。
+    字号按视频高度等比缩放: 1080p→64, 2K→68, 4K→128。
+    """
+    w = int(video_width or 1920)
+    h = int(video_height or 1080)
+    play_res_y = h if h in (720, 1080, 1440, 2160) else 1080
+    play_res_x = w if w in (1280, 1920, 2560, 3840) else 1920
+    # 字号 = 高度 * 0.059, 1080→64, 1440→85, 2160→128
+    font_size = max(36, int(play_res_y * 0.059))
+    outline = max(2, round(font_size * 0.0625))
+    margin_v = max(30, int(play_res_y * 0.042))
+    header = f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: 1920
-PlayResY: 1080
+PlayResX: {play_res_x}
+PlayResY: {play_res_y}
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: English,Arial,46,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1,2,60,60,45,1
-Style: Chinese,Microsoft YaHei,46,&H0000FFFF,&H0000FFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1,2,60,60,45,1
+Style: English,Arial,{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{outline},1,2,60,60,{margin_v},1
+Style: Chinese,Microsoft YaHei,{font_size},&H0000FFFF,&H0000FFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{outline},1,2,60,60,{margin_v},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
