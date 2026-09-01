@@ -85,7 +85,7 @@ class DualSub(_PluginBase):
     # 主题色
     plugin_color = "#8d51f9"
     # 插件版本
-    plugin_version = "1.7"
+    plugin_version = "1.8"
     # 插件作者
     plugin_author = "wuzhennana"
     # 作者主页
@@ -121,6 +121,10 @@ class DualSub(_PluginBase):
     _ai_api_key = ""
     _ai_model = ""
     _ai_models = []
+    _ai_target_lang = "zh-CN"  # AI 翻译目标语言: zh-CN | zh-TW | ja | ko | fr | de | es
+    _ai_cache_enabled = True   # AI 翻译缓存开关
+    _ai_retry_max = 2          # 失败任务自动重试次数
+    _ai_cache: Dict[str, str] = None  # 翻译缓存: {英文文本: 译文}
 
     # 任务队列与消费线程(实例级, 在 init_plugin 中初始化)
     _task_queue = None
@@ -175,6 +179,14 @@ class DualSub(_PluginBase):
         self._ai_api_key = config.get("ai_api_key", "") or ""
         self._ai_model = config.get("ai_model", "") or ""
         self._ai_models = config.get("ai_models", []) or []
+        self._ai_target_lang = config.get("ai_target_lang", "zh-CN") or "zh-CN"
+        self._ai_cache_enabled = bool(config.get("ai_cache_enabled", True))
+        try:
+            self._ai_retry_max = max(0, min(5, int(config.get("ai_retry_max", 2) or 2)))
+        except (TypeError, ValueError):
+            self._ai_retry_max = 2
+        # 加载翻译缓存
+        self._ai_cache = self.load_ai_cache()
 
         # 加载历史任务
         self._tasks = self.load_tasks()
@@ -258,8 +270,16 @@ class DualSub(_PluginBase):
         except Exception as e:
             return False, str(e)
 
+    # 目标语言中文名映射
+    _LANG_NAMES = {
+        "zh-CN": "简体中文", "zh-TW": "繁体中文", "ja": "日语",
+        "ko": "韩语", "fr": "法语", "de": "德语", "es": "西班牙语",
+    }
+
     def _ai_translate_missing(self, en_items: list, zh_items: list, logs: List[str]) -> list:
-        """批量翻译没有中文字幕时间轴重叠的英文条目, 返回新增中文条目。"""
+        """批量翻译没有目标语言字幕时间轴重叠的英文条目, 返回新增翻译条目。
+        支持翻译缓存(带上下文)和多语言目标。
+        """
         if not self._ai_enabled or not self._ai_api_key or not self._ai_base_url or not self._ai_model:
             return []
         missing = []
@@ -270,11 +290,36 @@ class DualSub(_PluginBase):
         if not missing:
             return []
 
-        # 按请求字符数分批, 保留字幕原始顺序和时间轴在本地映射
-        batches, current, size = [], [], 0
+        # 缓存命中检查
+        cache = self._ai_cache if (self._ai_cache_enabled and self._ai_cache) else {}
+        cached_count = 0
+        to_translate = []
+        translated_by_id = {}
         for index, item in enumerate(missing):
-            entry = {"id": index, "text": item.text}
-            entry_size = len(item.text) + 40
+            cached = cache.get(item.text)
+            if cached:
+                translated_by_id[index] = cached
+                cached_count += 1
+            else:
+                to_translate.append((index, item))
+
+        if not to_translate:
+            lang_name = self._LANG_NAMES.get(self._ai_target_lang, "中文")
+            logs.append(f"AI补全{lang_name}字幕: {len(missing)} 条全部命中缓存")
+            translated = [SubtitleItem(item.start, item.end, translated_by_id[i])
+                          for i, item in enumerate(missing) if translated_by_id.get(i)]
+            logs.append(f"AI补全完成: 成功 {len(translated)}/{len(missing)} 条, API调用 0 次 (缓存)")
+            return translated
+
+        # 构建带上下文的批次: 每条带上前一句英文作为上下文
+        batches, current, size = [], [], 0
+        for idx, (index, item) in enumerate(to_translate):
+            prev_text = ""
+            en_pos = en_items.index(item) if item in en_items else -1
+            if en_pos > 0:
+                prev_text = en_items[en_pos - 1].text
+            entry = {"id": index, "text": item.text, "context": prev_text}
+            entry_size = len(item.text) + len(prev_text) + 60
             if current and size + entry_size > 6000:
                 batches.append(current)
                 current, size = [], 0
@@ -283,12 +328,15 @@ class DualSub(_PluginBase):
         if current:
             batches.append(current)
 
-        logs.append(f"AI补全中文字幕: {len(missing)} 条, 分 {len(batches)} 批 ...")
-        translated_by_id = {}
+        lang_name = self._LANG_NAMES.get(self._ai_target_lang, "简体中文")
+        logs.append(f"AI补全{lang_name}字幕: {len(missing)} 条 (缓存命中 {cached_count}), 需翻译 {len(to_translate)} 条, 分 {len(batches)} 批 ...")
+
         endpoint = self._ai_base_url.rstrip("/") + "/chat/completions"
+        new_cache_entries = {}
         for batch_index, batch in enumerate(batches, 1):
             prompt = (
-                "把下面 JSON 数组中的每条英文影视字幕翻译成自然、简洁的简体中文。"
+                f"把下面 JSON 数组中的每条英文影视字幕翻译成自然、流畅的{lang_name}。"
+                "每条带 context 字段是上一句英文，仅用于理解上下文，不需要翻译 context。"
                 "必须只返回 JSON 数组，每项格式为 {\"id\":数字,\"translation\":\"译文\"}。"
                 "不要返回 Markdown、解释、序号或时间轴；id 必须原样保留。\n\n" +
                 json.dumps(batch, ensure_ascii=False)
@@ -297,7 +345,7 @@ class DualSub(_PluginBase):
                 "model": self._ai_model,
                 "temperature": 0.2,
                 "messages": [
-                    {"role": "system", "content": "你是专业影视字幕翻译，只翻译字幕文本并严格返回 JSON 数组。"},
+                    {"role": "system", "content": f"你是专业影视字幕翻译，只翻译字幕文本并严格返回 JSON 数组。目标语言：{lang_name}。"},
                     {"role": "user", "content": prompt},
                 ],
             }
@@ -320,16 +368,28 @@ class DualSub(_PluginBase):
                     results = results.get("translations", [])
                 for result in results or []:
                     if isinstance(result, dict) and isinstance(result.get("id"), int) and result.get("translation"):
-                        translated_by_id[result["id"]] = result["translation"].strip()
+                        tid = result["id"]
+                        translation = result["translation"].strip()
+                        translated_by_id[tid] = translation
+                        for index, item in enumerate(missing):
+                            if index == tid:
+                                new_cache_entries[item.text] = translation
+                                break
             except Exception as e:
                 logs.append(f"AI补全第 {batch_index}/{len(batches)} 批失败: {str(e)[:160]}")
+
+        if self._ai_cache_enabled and new_cache_entries:
+            self._ai_cache.update(new_cache_entries)
+            self.save_ai_cache()
 
         translated = []
         for index, item in enumerate(missing):
             text = translated_by_id.get(index)
             if text:
                 translated.append(SubtitleItem(item.start, item.end, text))
-        logs.append(f"AI补全完成: 成功 {len(translated)}/{len(missing)} 条, API调用 {len(batches)} 次")
+        api_calls = len(batches)
+        cache_note = f", 缓存命中 {cached_count}" if cached_count else ""
+        logs.append(f"AI补全完成: 成功 {len(translated)}/{len(missing)} 条, API调用 {api_calls} 次{cache_note}")
         return translated
 
     def probe_video_resolution(self, video_path: str) -> Tuple[int, int]:
@@ -613,7 +673,7 @@ class DualSub(_PluginBase):
         logger.info("[DualSub] 消费线程已启动")
 
     def _consume_tasks(self):
-        """消费任务队列"""
+        """消费任务队列, 失败任务自动重试"""
         while not self._stop_event.is_set():
             try:
                 task = self._task_queue.get(timeout=2)
@@ -622,15 +682,29 @@ class DualSub(_PluginBase):
                 continue
             if task is None:
                 continue
+            retry_count = task.get("retry_count", 0)
             try:
                 self._mark_status(task["task_id"], TaskStatus.IN_PROGRESS.value)
                 status, message = self.process_video(task["video_file"])
+                if status == TaskStatus.FAILED.value and retry_count < self._ai_retry_max:
+                    wait_sec = 5 * (retry_count + 1)
+                    logger.info(f"[DualSub] [{task['task_id'][:8]}] 失败, {wait_sec}s 后重试 ({retry_count + 1}/{self._ai_retry_max})")
+                    self._mark_status(task["task_id"], TaskStatus.PENDING.value, message=f"等待重试 ({retry_count + 1}/{self._ai_retry_max})")
+                    time.sleep(wait_sec)
+                    task["retry_count"] = retry_count + 1
+                    self._task_queue.put(task)
+                    continue
                 self._mark_status(task["task_id"], status, message=message)
                 logger.info(f"[DualSub] [{task['task_id'][:8]}] {Path(task['video_file']).name} -> {status}: {message}")
                 if self._send_notify:
                     self._notify(task["video_file"], status, message)
             except Exception as e:
                 logger.error(f"[DualSub] 消费任务异常: {e}\n{traceback.format_exc()}")
+                if retry_count < self._ai_retry_max:
+                    time.sleep(5 * (retry_count + 1))
+                    task["retry_count"] = retry_count + 1
+                    self._task_queue.put(task)
+                    continue
                 self._mark_status(task["task_id"], TaskStatus.FAILED.value, message=str(e))
             finally:
                 try:
@@ -926,6 +1000,20 @@ class DualSub(_PluginBase):
         return f"{int(size_bytes)} B"
 
     # ---------------- 历史持久化 ----------------
+    def load_ai_cache(self) -> Dict[str, str]:
+        """加载 AI 翻译缓存"""
+        try:
+            return self.get_data("ai_cache") or {}
+        except Exception:
+            return {}
+
+    def save_ai_cache(self):
+        """保存 AI 翻译缓存"""
+        try:
+            self.save_data("ai_cache", self._ai_cache or {})
+        except Exception as e:
+            logger.error(f"[DualSub] 保存翻译缓存失败: {e}")
+
     def load_tasks(self) -> Dict[str, dict]:
         try:
             return self.get_data("tasks") or {}
@@ -1157,6 +1245,9 @@ class DualSub(_PluginBase):
             "ai_api_key": self._ai_api_key,
             "ai_model": self._ai_model,
             "ai_models": self._ai_models,
+            "ai_target_lang": self._ai_target_lang,
+            "ai_cache_enabled": self._ai_cache_enabled,
+            "ai_retry_max": self._ai_retry_max,
         }
 
 
@@ -1469,26 +1560,46 @@ class DualSub(_PluginBase):
                         'content': [
                             {
                                 'component': 'VCol',
-                                'props': {'cols': 12, 'md': 4},
+                                'props': {'cols': 12, 'md': 3},
                                 'content': [{
                                     'component': 'VSwitch',
                                     'props': {
                                         'model': 'ai_enabled',
-                                        'label': 'AI补全缺失中文字幕',
-                                        'hint': '英文有字幕但中文缺失时，自动调用 AI 翻译补全'
+                                        'label': 'AI补全缺失字幕',
+                                        'hint': '英文有字幕但目标语言缺失时，自动调用 AI 翻译补全'
                                     }
                                 }]
                             },
                             {
                                 'component': 'VCol',
-                                'props': {'cols': 12, 'md': 8},
+                                'props': {'cols': 12, 'md': 5},
                                 'content': [{
                                     'component': 'VTextField',
                                     'props': {
                                         'model': 'ai_base_url',
                                         'label': 'AI API 地址',
                                         'placeholder': 'https://api.openai.com/v1',
-                                        'hint': '支持 OpenAI 兼容接口，填写到 /v1，不要填 /chat/completions'
+                                        'hint': 'OpenAI 兼容接口，填到 /v1'
+                                    }
+                                }]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 4},
+                                'content': [{
+                                    'component': 'VSelect',
+                                    'props': {
+                                        'model': 'ai_target_lang',
+                                        'label': '翻译目标语言',
+                                        'items': [
+                                            {'title': '简体中文', 'value': 'zh-CN'},
+                                            {'title': '繁体中文', 'value': 'zh-TW'},
+                                            {'title': '日语', 'value': 'ja'},
+                                            {'title': '韩语', 'value': 'ko'},
+                                            {'title': '法语', 'value': 'fr'},
+                                            {'title': '德语', 'value': 'de'},
+                                            {'title': '西班牙语', 'value': 'es'},
+                                        ]
                                     }
                                 }]
                             }
@@ -1499,7 +1610,7 @@ class DualSub(_PluginBase):
                         'content': [
                             {
                                 'component': 'VCol',
-                                'props': {'cols': 12, 'md': 8},
+                                'props': {'cols': 12, 'md': 6},
                                 'content': [{
                                     'component': 'VTextField',
                                     'props': {
@@ -1507,7 +1618,7 @@ class DualSub(_PluginBase):
                                         'label': 'AI API Key',
                                         'type': 'password',
                                         'placeholder': 'sk-...',
-                                        'hint': '仅保存在 MoviePilot 插件配置中'
+                                        'hint': '先填写地址和 Key 并保存，再点下方获取模型'
                                     }
                                 }]
                             },
@@ -1520,8 +1631,53 @@ class DualSub(_PluginBase):
                                         'model': 'ai_model',
                                         'label': 'AI 模型',
                                         'items': self._ai_models,
-                                        'hint': '先保存 API 地址和 Key，再到插件详情页点击“获取 AI 模型列表”；获取后重新打开配置选择模型'
+                                        'hint': '点下方按钮自动获取，或手动填写'
                                     }
+                                }]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 2},
+                                'content': [{
+                                    'component': 'VTextField',
+                                    'props': {
+                                        'model': 'ai_retry_max',
+                                        'label': '失败重试次数',
+                                        'placeholder': '2',
+                                        'hint': '0=不重试'
+                                    }
+                                }]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 4},
+                                'content': [{
+                                    'component': 'VSwitch',
+                                    'props': {
+                                        'model': 'ai_cache_enabled',
+                                        'label': '翻译缓存',
+                                        'hint': '相同句子不重复调用 AI（带上下文保证质量）'
+                                    }
+                                }]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 8, 'class': 'd-flex align-center'},
+                                'content': [{
+                                    'component': 'VBtn',
+                                    'props': {
+                                        'color': 'secondary',
+                                        'variant': 'tonal',
+                                        'size': 'small',
+                                        'prepend-icon': 'mdi-cloud-download-outline',
+                                        'onClick': 'async function() {\n  if(!model.ai_base_url || !model.ai_api_key) { alert("请先填写并保存 AI API 地址和 Key"); return; }\n  try {\n    const resp = await fetch("api/v1/plugin/DualSub/ai_models?token=" + (localStorage.getItem("token")||""), {method:"GET"});\n    const data = await resp.json();\n    if(data.success && data.models) {\n      model.ai_models = data.models;\n      alert("已获取 " + data.models.length + " 个模型，请选择");\n    } else { alert(data.message || "获取失败"); }\n  } catch(e) { alert("获取失败: " + e.message); }\n}'
+                                    },
+                                    'text': '获取模型列表'
                                 }]
                             }
                         ]
@@ -1572,6 +1728,9 @@ class DualSub(_PluginBase):
             "ai_api_key": "",
             "ai_model": "",
             "ai_models": [],
+            "ai_target_lang": "zh-CN",
+            "ai_cache_enabled": True,
+            "ai_retry_max": 2,
         }
 
     def get_page(self) -> List[dict]:
@@ -1584,23 +1743,6 @@ class DualSub(_PluginBase):
                 "component": "div",
                 "props": {"class": "mb-3"},
                 "content": [
-                    {
-                        "component": "VBtn",
-                        "props": {
-                            "color": "secondary",
-                            "variant": "tonal",
-                            "size": "small",
-                            "prepend-icon": "mdi-cloud-download-outline",
-                            "class": "me-3"
-                        },
-                        "text": "获取 AI 模型列表",
-                        "events": {
-                            "click": {
-                                "api": "plugin/DualSub/ai_models",
-                                "method": "get"
-                            }
-                        }
-                    },
                     {
                         "component": "VBtnToggle",
                         "props": {
