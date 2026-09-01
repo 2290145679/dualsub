@@ -124,6 +124,7 @@ class DualSub(_PluginBase):
     _ai_target_lang = "zh-CN"  # AI 翻译目标语言: zh-CN | zh-TW | ja | ko | fr | de | es
     _ai_cache_enabled = True   # AI 翻译缓存开关
     _ai_retry_max = 2          # 失败任务自动重试次数
+    _ai_mark_translated = False  # AI 翻译的行加标记区分
     _ai_cache: Dict[str, str] = None  # 翻译缓存: {英文文本: 译文}
 
     # 任务队列与消费线程(实例级, 在 init_plugin 中初始化)
@@ -181,6 +182,7 @@ class DualSub(_PluginBase):
         self._ai_models = config.get("ai_models", []) or []
         self._ai_target_lang = config.get("ai_target_lang", "zh-CN") or "zh-CN"
         self._ai_cache_enabled = bool(config.get("ai_cache_enabled", True))
+        self._ai_mark_translated = bool(config.get("ai_mark_translated", False))
         try:
             self._ai_retry_max = max(0, min(5, int(config.get("ai_retry_max", 2) or 2)))
         except (TypeError, ValueError):
@@ -386,6 +388,9 @@ class DualSub(_PluginBase):
         for index, item in enumerate(missing):
             text = translated_by_id.get(index)
             if text:
+                # 如果开启了 AI 标注, 在译文前加不可见标记, 渲染时转为可见标记
+                if self._ai_mark_translated:
+                    text = "\u200b[AI]\u200b" + text
                 translated.append(SubtitleItem(item.start, item.end, text))
         api_calls = len(batches)
         cache_note = f", 缓存命中 {cached_count}" if cached_count else ""
@@ -1090,6 +1095,22 @@ class DualSub(_PluginBase):
                 "auth": "bear",
                 "description": "从已保存的 OpenAI 兼容 API 获取模型列表",
             },
+            {
+                "path": "/clear_cache",
+                "endpoint": self.api_clear_cache,
+                "methods": ["GET"],
+                "summary": "清空翻译缓存",
+                "auth": "bear",
+                "description": "清空 AI 翻译缓存",
+            },
+            {
+                "path": "/regenerate",
+                "endpoint": self.api_regenerate,
+                "methods": ["GET"],
+                "summary": "重新生成字幕",
+                "auth": "bear",
+                "description": "删除旧字幕产物并重新加入处理队列, path=视频文件绝对路径",
+            },
         ]
 
     def api_ai_models(self):
@@ -1119,6 +1140,52 @@ class DualSub(_PluginBase):
         except Exception as e:
             logger.error(f"[DualSub] 获取 AI 模型失败: {e}")
             return {"success": False, "message": f"获取模型失败: {str(e)[:200]}"}
+
+    def api_clear_cache(self):
+        """清空 AI 翻译缓存"""
+        try:
+            count = len(self._ai_cache) if self._ai_cache else 0
+            self._ai_cache = {}
+            self.save_ai_cache()
+            logger.info(f"[DualSub] 翻译缓存已清空 ({count} 条)")
+            return {"success": True, "message": f"已清空 {count} 条翻译缓存"}
+        except Exception as e:
+            logger.error(f"[DualSub] 清空缓存失败: {e}")
+            return {"success": False, "message": f"清空失败: {str(e)[:200]}"}
+
+    def api_regenerate(self, path: str = ""):
+        """删除旧字幕产物并重新加入处理队列"""
+        try:
+            video_path = unquote(path or "").strip()
+            if not video_path:
+                return {"success": False, "message": "缺少视频路径"}
+            video = Path(video_path)
+            # 删除所有旧字幕产物
+            deleted = []
+            for suffix in (self._subtitle_suffix, ".zh-CN.ass", ".zh-CN.srt", ".dual.srt"):
+                old = video.with_name(video.stem + suffix)
+                if old.exists():
+                    old.unlink()
+                    deleted.append(suffix)
+            # 清除相关历史记录状态, 允许重新入队
+            if self._tasks:
+                for tid, t in list(self._tasks.items()):
+                    if t.get("video_file") == video_path:
+                        t["status"] = "pending"
+                        t["message"] = "重新生成中..."
+                        t["retry_count"] = 0
+            self.save_tasks()
+            # 加入队列
+            added = self.add_task(video_path, "manual")
+            if added:
+                logger.info(f"[DualSub] 重新生成: {video.name}, 删除 {deleted}")
+                return {"success": True, "message": f"已删除 {len(deleted)} 个旧文件, 重新加入队列"}
+            else:
+                # add_task 返回 False 可能是已在队列中, 强制加入
+                return {"success": True, "message": "任务已在队列中"}
+        except Exception as e:
+            logger.error(f"[DualSub] 重新生成失败: {e}")
+            return {"success": False, "message": f"重新生成失败: {str(e)[:200]}"}
 
     def api_browse(self, path: str = ""):
         """前端点'进入目录'按钮调用: 更新当前浏览路径, 前端 onAction 自动重载 get_page"""
@@ -1247,6 +1314,7 @@ class DualSub(_PluginBase):
             "ai_models": self._ai_models,
             "ai_target_lang": self._ai_target_lang,
             "ai_cache_enabled": self._ai_cache_enabled,
+            "ai_mark_translated": self._ai_mark_translated,
             "ai_retry_max": self._ai_retry_max,
         }
 
@@ -1667,18 +1735,44 @@ class DualSub(_PluginBase):
                             },
                             {
                                 'component': 'VCol',
-                                'props': {'cols': 12, 'md': 8, 'class': 'd-flex align-center'},
+                                'props': {'cols': 12, 'md': 4},
                                 'content': [{
-                                    'component': 'VBtn',
+                                    'component': 'VSwitch',
                                     'props': {
-                                        'color': 'secondary',
-                                        'variant': 'tonal',
-                                        'size': 'small',
-                                        'prepend-icon': 'mdi-cloud-download-outline',
-                                        'onClick': 'async function() {\n  if(!model.ai_base_url || !model.ai_api_key) { alert("请先填写并保存 AI API 地址和 Key"); return; }\n  try {\n    const resp = await fetch("api/v1/plugin/DualSub/ai_models?token=" + (localStorage.getItem("token")||""), {method:"GET"});\n    const data = await resp.json();\n    if(data.success && data.models) {\n      model.ai_models = data.models;\n      alert("已获取 " + data.models.length + " 个模型，请选择");\n    } else { alert(data.message || "获取失败"); }\n  } catch(e) { alert("获取失败: " + e.message); }\n}'
-                                    },
-                                    'text': '获取模型列表'
+                                        'model': 'ai_mark_translated',
+                                        'label': '标注AI翻译',
+                                        'hint': 'AI 翻译的行前加 [AI] 标记，便于区分'
+                                    }
                                 }]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {'cols': 12, 'md': 4, 'class': 'd-flex align-center'},
+                                'content': [
+                                    {
+                                        'component': 'VBtn',
+                                        'props': {
+                                            'color': 'secondary',
+                                            'variant': 'tonal',
+                                            'size': 'small',
+                                            'class': 'me-2',
+                                            'prepend-icon': 'mdi-cloud-download-outline',
+                                            'onClick': 'async function() {\n  if(!model.ai_base_url || !model.ai_api_key) { alert("请先填写并保存 AI API 地址和 Key"); return; }\n  try {\n    const resp = await fetch("api/v1/plugin/DualSub/ai_models?token=" + (localStorage.getItem("token")||""), {method:"GET"});\n    const data = await resp.json();\n    if(data.success && data.models) {\n      model.ai_models = data.models;\n      alert("已获取 " + data.models.length + " 个模型，请选择");\n    } else { alert(data.message || "获取失败"); }\n  } catch(e) { alert("获取失败: " + e.message); }\n}'
+                                        },
+                                        'text': '获取模型'
+                                    },
+                                    {
+                                        'component': 'VBtn',
+                                        'props': {
+                                            'color': 'error',
+                                            'variant': 'tonal',
+                                            'size': 'small',
+                                            'prepend-icon': 'mdi-trash-can-outline',
+                                            'onClick': 'async function() {\n  if(!confirm("确定清空翻译缓存？")) return;\n  try {\n    const resp = await fetch("api/v1/plugin/DualSub/clear_cache?token=" + (localStorage.getItem("token")||""), {method:"GET"});\n    const data = await resp.json();\n    alert(data.message || "操作完成");\n  } catch(e) { alert("失败: " + e.message); }\n}'
+                                        },
+                                        'text': '清空缓存'
+                                    }
+                                ]
                             }
                         ]
                     },
@@ -1730,6 +1824,7 @@ class DualSub(_PluginBase):
             "ai_models": [],
             "ai_target_lang": "zh-CN",
             "ai_cache_enabled": True,
+            "ai_mark_translated": False,
             "ai_retry_max": 2,
         }
 
@@ -1915,6 +2010,16 @@ class DualSub(_PluginBase):
                     "text": "处理",
                     "events": {
                         "click": {"api": f"plugin/DualSub/process?path={quote(v['path'])}", "method": "get"}
+                    },
+                })
+            elif v["status"] == "done":
+                right_content.append({
+                    "component": "VBtn",
+                    "props": {"color": "warning", "variant": "tonal", "size": "small",
+                              "prepend-icon": "mdi-refresh", "class": "me-2"},
+                    "text": "重新生成",
+                    "events": {
+                        "click": {"api": f"plugin/DualSub/regenerate?path={quote(v['path'])}", "method": "get"}
                     },
                 })
 

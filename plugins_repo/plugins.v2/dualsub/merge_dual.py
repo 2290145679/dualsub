@@ -264,7 +264,8 @@ def dedup_overlap(items, gap=0.001):
 def render_srt(items):
     lines = []
     for idx, item in enumerate(items, 1):
-        lines.append(f"{idx}\n{_fmt(item.start)} --> {_fmt(item.end)}\n{item.text}\n")
+        text = (item.text or "").replace("\u200b[AI]\u200b", "[AI] ")
+        lines.append(f"{idx}\n{_fmt(item.start)} --> {_fmt(item.end)}\n{text}\n")
     return "\n".join(lines)
 
 
@@ -303,11 +304,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # 顺序由 item.text 的行序决定: 第一行在上, 第二行在下
         parts = []
         for text in (item.text or "").splitlines() or [""]:
+            # AI 翻译标记: \u200b[AI]\u200b -> ASS 内联青色标记
+            ai_mark = ""
+            if "\u200b[AI]\u200b" in text:
+                text = text.replace("\u200b[AI]\u200b", "")
+                ai_mark = "{\\c&H00FFFF&\\b1}[AI]{\\r}"
             clean = text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
             if _has_cjk(text):
-                parts.append(f"{{\\rChinese}}{clean}")
+                prefix = f"{{\\rChinese}}{ai_mark}"
             else:
-                parts.append(f"{{\\rEnglish}}{clean}")
+                prefix = f"{{\\rEnglish}}{ai_mark}"
+            parts.append(f"{prefix}{clean}")
         combined = "\\N".join(parts)
         lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{combined}")
     return "\n".join(lines) + "\n"
