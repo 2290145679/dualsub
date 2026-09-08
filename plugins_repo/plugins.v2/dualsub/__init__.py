@@ -1757,7 +1757,21 @@ class DualSub(_PluginBase):
                                             'size': 'small',
                                             'class': 'me-2',
                                             'prepend-icon': 'mdi-cloud-download-outline',
-                                            'onClick': 'async function() {\n  if(!model.ai_base_url || !model.ai_api_key) { alert("请先填写并保存 AI API 地址和 Key"); return; }\n  try {\n    const resp = await fetch("api/v1/plugin/DualSub/ai_models?token=" + (localStorage.getItem("token")||""), {method:"GET"});\n    const data = await resp.json();\n    if(data.success && data.models) {\n      model.ai_models = data.models;\n      alert("已获取 " + data.models.length + " 个模型，请选择");\n    } else { alert(data.message || "获取失败"); }\n  } catch(e) { alert("获取失败: " + e.message); }\n}'
+                                            'onClick': 'async function() {\n'
+                                                       '  if(!model.ai_base_url || !model.ai_api_key) { alert("请先填写并保存 AI API 地址和 Key"); return; }\n'
+                                                       '  try {\n'
+                                                       '    var tk = "";\n'
+                                                       '    try { tk = localStorage.getItem("token") || localStorage.getItem("access_token") || localStorage.getItem("user_token") || ""; } catch(e) {}\n'
+                                                       '    var url = "api/v1/plugin/DualSub/ai_models";\n'
+                                                       '    if(tk) url += "?token=" + encodeURIComponent(tk);\n'
+                                                       '    var resp = await fetch(url, {method:"GET", credentials:"include"});\n'
+                                                       '    var data = await resp.json();\n'
+                                                       '    if(data.success && data.models) {\n'
+                                                       '      model.ai_models = data.models;\n'
+                                                       '      alert("已获取 " + data.models.length + " 个模型，请选择");\n'
+                                                       '    } else { alert(data.message || "获取失败"); }\n'
+                                                       '  } catch(e) { alert("获取失败: " + e.message); }\n'
+                                                       '}'
                                         },
                                         'text': '获取模型'
                                     },
@@ -1768,7 +1782,18 @@ class DualSub(_PluginBase):
                                             'variant': 'tonal',
                                             'size': 'small',
                                             'prepend-icon': 'mdi-trash-can-outline',
-                                            'onClick': 'async function() {\n  if(!confirm("确定清空翻译缓存？")) return;\n  try {\n    const resp = await fetch("api/v1/plugin/DualSub/clear_cache?token=" + (localStorage.getItem("token")||""), {method:"GET"});\n    const data = await resp.json();\n    alert(data.message || "操作完成");\n  } catch(e) { alert("失败: " + e.message); }\n}'
+                                            'onClick': 'async function() {\n'
+                                                       '  if(!confirm("确定清空翻译缓存？")) return;\n'
+                                                       '  try {\n'
+                                                       '    var tk = "";\n'
+                                                       '    try { tk = localStorage.getItem("token") || localStorage.getItem("access_token") || localStorage.getItem("user_token") || ""; } catch(e) {}\n'
+                                                       '    var url = "api/v1/plugin/DualSub/clear_cache";\n'
+                                                       '    if(tk) url += "?token=" + encodeURIComponent(tk);\n'
+                                                       '    var resp = await fetch(url, {method:"GET", credentials:"include"});\n'
+                                                       '    var data = await resp.json();\n'
+                                                       '    alert(data.message || "操作完成");\n'
+                                                       '  } catch(e) { alert("失败: " + e.message); }\n'
+                                                       '}'
                                         },
                                         'text': '清空缓存'
                                     }
