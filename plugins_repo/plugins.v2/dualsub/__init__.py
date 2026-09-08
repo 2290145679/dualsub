@@ -190,6 +190,14 @@ class DualSub(_PluginBase):
         # 加载翻译缓存
         self._ai_cache = self.load_ai_cache()
 
+        # 如果填了 AI 地址和 Key 但模型列表为空, 自动获取一次
+        if self._ai_enabled and self._ai_base_url and self._ai_api_key and not self._ai_models:
+            try:
+                logger.info("[DualSub] 检测到已填 AI 配置但模型列表为空, 自动获取模型列表 ...")
+                self._fetch_ai_models()
+            except Exception as e:
+                logger.warning(f"[DualSub] 自动获取模型列表失败: {e}")
+
         # 加载历史任务
         self._tasks = self.load_tasks()
 
@@ -1113,12 +1121,13 @@ class DualSub(_PluginBase):
             },
         ]
 
-    def api_ai_models(self):
-        """从 OpenAI 兼容 API 获取模型列表并保存到配置。"""
+    def _fetch_ai_models(self):
+        """获取 AI 模型列表并保存到配置（内部方法，无需认证）"""
         if not self._ai_base_url or not self._ai_api_key:
-            return {"success": False, "message": "请先填写并保存 AI API 地址和 API Key"}
+            return False, "请先填写并保存 AI API 地址和 API Key"
         try:
             endpoint = self._ai_base_url.rstrip("/") + "/models"
+            logger.info(f"[DualSub] 正在获取模型列表: {endpoint}")
             req = urllib.request.Request(
                 endpoint,
                 headers={"Accept": "application/json", "Authorization": f"Bearer {self._ai_api_key}"},
@@ -1133,13 +1142,24 @@ class DualSub(_PluginBase):
                     models.append(model_id)
             models.sort()
             if not models:
-                return {"success": False, "message": "接口返回的模型列表为空"}
+                logger.warning("[DualSub] API 返回的模型列表为空")
+                return False, "接口返回的模型列表为空"
             self._ai_models = models
             self.update_config(self._build_config())
-            return {"success": True, "message": f"已获取 {len(models)} 个模型", "models": models}
+            logger.info(f"[DualSub] 获取模型成功: {len(models)} 个模型")
+            return True, models
         except Exception as e:
             logger.error(f"[DualSub] 获取 AI 模型失败: {e}")
-            return {"success": False, "message": f"获取模型失败: {str(e)[:200]}"}
+            return False, f"获取模型失败: {str(e)[:200]}"
+
+    def api_ai_models(self):
+        """从 OpenAI 兼容 API 获取模型列表并保存到配置。"""
+        logger.info(f"[DualSub] api_ai_models 被调用, base_url={self._ai_base_url}, has_key={bool(self._ai_api_key)}")
+        ok, result = self._fetch_ai_models()
+        if ok:
+            return {"success": True, "message": f"已获取 {len(result)} 个模型", "models": result}
+        else:
+            return {"success": False, "message": result}
 
     def api_clear_cache(self):
         """清空 AI 翻译缓存"""
@@ -1761,16 +1781,22 @@ class DualSub(_PluginBase):
                                                        '  if(!model.ai_base_url || !model.ai_api_key) { alert("请先填写并保存 AI API 地址和 Key"); return; }\n'
                                                        '  try {\n'
                                                        '    var tk = "";\n'
-                                                       '    try { tk = localStorage.getItem("token") || localStorage.getItem("access_token") || localStorage.getItem("user_token") || ""; } catch(e) {}\n'
-                                                       '    var url = "api/v1/plugin/DualSub/ai_models";\n'
-                                                       '    if(tk) url += "?token=" + encodeURIComponent(tk);\n'
+                                                       '    try {\n'
+                                                       '      var authRaw = localStorage.getItem("auth") || "{}";\n'
+                                                       '      var authObj = JSON.parse(authRaw);\n'
+                                                       '      tk = authObj.token || "";\n'
+                                                       '    } catch(e) { console.log("[DualSub] 读取 auth store 失败:", e); }\n'
+                                                       '    console.log("[DualSub] 获取模型, token长度:", tk.length);\n'
+                                                       '    if(!tk) { alert("未找到登录凭证，请刷新页面后重试"); return; }\n'
+                                                       '    var url = "api/v1/plugin/DualSub/ai_models?token=" + encodeURIComponent(tk);\n'
                                                        '    var resp = await fetch(url, {method:"GET", credentials:"include"});\n'
+                                                       '    console.log("[DualSub] 响应状态:", resp.status);\n'
                                                        '    var data = await resp.json();\n'
                                                        '    if(data.success && data.models) {\n'
                                                        '      model.ai_models = data.models;\n'
                                                        '      alert("已获取 " + data.models.length + " 个模型，请选择");\n'
                                                        '    } else { alert(data.message || "获取失败"); }\n'
-                                                       '  } catch(e) { alert("获取失败: " + e.message); }\n'
+                                                       '  } catch(e) { console.error("[DualSub] 获取模型异常:", e); alert("获取失败: " + e.message); }\n'
                                                        '}'
                                         },
                                         'text': '获取模型'
@@ -1786,9 +1812,13 @@ class DualSub(_PluginBase):
                                                        '  if(!confirm("确定清空翻译缓存？")) return;\n'
                                                        '  try {\n'
                                                        '    var tk = "";\n'
-                                                       '    try { tk = localStorage.getItem("token") || localStorage.getItem("access_token") || localStorage.getItem("user_token") || ""; } catch(e) {}\n'
-                                                       '    var url = "api/v1/plugin/DualSub/clear_cache";\n'
-                                                       '    if(tk) url += "?token=" + encodeURIComponent(tk);\n'
+                                                       '    try {\n'
+                                                       '      var authRaw = localStorage.getItem("auth") || "{}";\n'
+                                                       '      var authObj = JSON.parse(authRaw);\n'
+                                                       '      tk = authObj.token || "";\n'
+                                                       '    } catch(e) {}\n'
+                                                       '    if(!tk) { alert("未找到登录凭证，请刷新页面后重试"); return; }\n'
+                                                       '    var url = "api/v1/plugin/DualSub/clear_cache?token=" + encodeURIComponent(tk);\n'
                                                        '    var resp = await fetch(url, {method:"GET", credentials:"include"});\n'
                                                        '    var data = await resp.json();\n'
                                                        '    alert(data.message || "操作完成");\n'
