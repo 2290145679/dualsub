@@ -1768,15 +1768,67 @@ class DualSub(_PluginBase):
                             {
                                 'component': 'VCol',
                                 'props': {'cols': 12, 'md': 4, 'class': 'd-flex align-center'},
-                                'content': [{
-                                    'component': 'VAlert',
-                                    'props': {
-                                        'type': 'info',
-                                        'variant': 'tonal',
-                                        'density': 'compact',
-                                        'text': '填写地址和 Key 后保存, 自动获取模型列表; 清空缓存请到插件详情页操作'
+                                'content': [
+                                    {
+                                        'component': 'VBtn',
+                                        'props': {
+                                            'color': 'secondary',
+                                            'variant': 'tonal',
+                                            'size': 'small',
+                                            'class': 'me-2',
+                                            'prepend-icon': 'mdi-cloud-download-outline',
+                                            'onClick': 'async function() {\n'
+                                                       '  if(!model.ai_base_url || !model.ai_api_key) { alert("请先填写 API 地址和 Key 并保存"); return; }\n'
+                                                       '  var btn = this;\n'
+                                                       '  if(btn) { btn.loading = true; btn.disabled = true; }\n'
+                                                       '  try {\n'
+                                                       '    var tk = "";\n'
+                                                       '    try {\n'
+                                                       '      var authRaw = localStorage.getItem("auth") || "{}";\n'
+                                                       '      var authObj = JSON.parse(authRaw);\n'
+                                                       '      tk = authObj.token || "";\n'
+                                                       '    } catch(e) {}\n'
+                                                       '    var url = "api/v1/plugin/DualSub/ai_models";\n'
+                                                       '    if(tk) url += "?token=" + encodeURIComponent(tk);\n'
+                                                       '    var resp = await fetch(url, {method:"GET", credentials:"include"});\n'
+                                                       '    var data = await resp.json();\n'
+                                                       '    if(data.success && data.models) {\n'
+                                                       '      model.ai_models = data.models;\n'
+                                                       '      alert("已获取 " + data.models.length + " 个模型");\n'
+                                                       '    } else { alert(data.message || "获取失败, 请到插件详情页点获取模型列表按钮"); }\n'
+                                                       '  } catch(e) { alert("获取失败: " + e.message); }\n'
+                                                       '  finally { if(btn) { btn.loading = false; btn.disabled = false; } }\n'
+                                                       '}'
+                                        },
+                                        'text': '获取模型'
+                                    },
+                                    {
+                                        'component': 'VBtn',
+                                        'props': {
+                                            'color': 'error',
+                                            'variant': 'tonal',
+                                            'size': 'small',
+                                            'prepend-icon': 'mdi-trash-can-outline',
+                                            'onClick': 'async function() {\n'
+                                                       '  if(!confirm("确定清空翻译缓存？")) return;\n'
+                                                       '  try {\n'
+                                                       '    var tk = "";\n'
+                                                       '    try {\n'
+                                                       '      var authRaw = localStorage.getItem("auth") || "{}";\n'
+                                                       '      var authObj = JSON.parse(authRaw);\n'
+                                                       '      tk = authObj.token || "";\n'
+                                                       '    } catch(e) {}\n'
+                                                       '    var url = "api/v1/plugin/DualSub/clear_cache";\n'
+                                                       '    if(tk) url += "?token=" + encodeURIComponent(tk);\n'
+                                                       '    var resp = await fetch(url, {method:"GET", credentials:"include"});\n'
+                                                       '    var data = await resp.json();\n'
+                                                       '    alert(data.message || "操作完成");\n'
+                                                       '  } catch(e) { alert("失败: " + e.message); }\n'
+                                                       '}'
+                                        },
+                                        'text': '清空缓存'
                                     }
-                                }]
+                                ]
                             }
                         ]
                     },
