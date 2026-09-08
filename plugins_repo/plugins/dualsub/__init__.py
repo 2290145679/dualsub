@@ -1768,66 +1768,15 @@ class DualSub(_PluginBase):
                             {
                                 'component': 'VCol',
                                 'props': {'cols': 12, 'md': 4, 'class': 'd-flex align-center'},
-                                'content': [
-                                    {
-                                        'component': 'VBtn',
-                                        'props': {
-                                            'color': 'secondary',
-                                            'variant': 'tonal',
-                                            'size': 'small',
-                                            'class': 'me-2',
-                                            'prepend-icon': 'mdi-cloud-download-outline',
-                                            'onClick': 'async function() {\n'
-                                                       '  if(!model.ai_base_url || !model.ai_api_key) { alert("请先填写并保存 AI API 地址和 Key"); return; }\n'
-                                                       '  try {\n'
-                                                       '    var tk = "";\n'
-                                                       '    try {\n'
-                                                       '      var authRaw = localStorage.getItem("auth") || "{}";\n'
-                                                       '      var authObj = JSON.parse(authRaw);\n'
-                                                       '      tk = authObj.token || "";\n'
-                                                       '    } catch(e) { console.log("[DualSub] 读取 auth store 失败:", e); }\n'
-                                                       '    console.log("[DualSub] 获取模型, token长度:", tk.length);\n'
-                                                       '    if(!tk) { alert("未找到登录凭证，请刷新页面后重试"); return; }\n'
-                                                       '    var url = "api/v1/plugin/DualSub/ai_models?token=" + encodeURIComponent(tk);\n'
-                                                       '    var resp = await fetch(url, {method:"GET", credentials:"include"});\n'
-                                                       '    console.log("[DualSub] 响应状态:", resp.status);\n'
-                                                       '    var data = await resp.json();\n'
-                                                       '    if(data.success && data.models) {\n'
-                                                       '      model.ai_models = data.models;\n'
-                                                       '      alert("已获取 " + data.models.length + " 个模型，请选择");\n'
-                                                       '    } else { alert(data.message || "获取失败"); }\n'
-                                                       '  } catch(e) { console.error("[DualSub] 获取模型异常:", e); alert("获取失败: " + e.message); }\n'
-                                                       '}'
-                                        },
-                                        'text': '获取模型'
-                                    },
-                                    {
-                                        'component': 'VBtn',
-                                        'props': {
-                                            'color': 'error',
-                                            'variant': 'tonal',
-                                            'size': 'small',
-                                            'prepend-icon': 'mdi-trash-can-outline',
-                                            'onClick': 'async function() {\n'
-                                                       '  if(!confirm("确定清空翻译缓存？")) return;\n'
-                                                       '  try {\n'
-                                                       '    var tk = "";\n'
-                                                       '    try {\n'
-                                                       '      var authRaw = localStorage.getItem("auth") || "{}";\n'
-                                                       '      var authObj = JSON.parse(authRaw);\n'
-                                                       '      tk = authObj.token || "";\n'
-                                                       '    } catch(e) {}\n'
-                                                       '    if(!tk) { alert("未找到登录凭证，请刷新页面后重试"); return; }\n'
-                                                       '    var url = "api/v1/plugin/DualSub/clear_cache?token=" + encodeURIComponent(tk);\n'
-                                                       '    var resp = await fetch(url, {method:"GET", credentials:"include"});\n'
-                                                       '    var data = await resp.json();\n'
-                                                       '    alert(data.message || "操作完成");\n'
-                                                       '  } catch(e) { alert("失败: " + e.message); }\n'
-                                                       '}'
-                                        },
-                                        'text': '清空缓存'
+                                'content': [{
+                                    'component': 'VAlert',
+                                    'props': {
+                                        'type': 'info',
+                                        'variant': 'tonal',
+                                        'density': 'compact',
+                                        'text': '填写地址和 Key 后保存, 自动获取模型列表; 清空缓存请到插件详情页操作'
                                     }
-                                ]
+                                }]
                             }
                         ]
                     },
@@ -1891,8 +1840,42 @@ class DualSub(_PluginBase):
         return [
             {
                 "component": "div",
-                "props": {"class": "mb-3"},
+                "props": {"class": "mb-3 d-flex align-center"},
                 "content": [
+                    {
+                        "component": "VBtn",
+                        "props": {
+                            "color": "secondary",
+                            "variant": "tonal",
+                            "size": "small",
+                            "class": "me-2",
+                            "prepend-icon": "mdi-cloud-download-outline",
+                        },
+                        "text": "获取模型列表",
+                        "events": {
+                            "click": {
+                                "api": "plugin/DualSub/ai_models",
+                                "method": "get"
+                            }
+                        }
+                    },
+                    {
+                        "component": "VBtn",
+                        "props": {
+                            "color": "error",
+                            "variant": "tonal",
+                            "size": "small",
+                            "class": "me-2",
+                            "prepend-icon": "mdi-trash-can-outline",
+                        },
+                        "text": "清空缓存",
+                        "events": {
+                            "click": {
+                                "api": "plugin/DualSub/clear_cache",
+                                "method": "get"
+                            }
+                        }
+                    },
                     {
                         "component": "VBtnToggle",
                         "props": {
