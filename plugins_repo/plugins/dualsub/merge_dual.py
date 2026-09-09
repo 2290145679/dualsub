@@ -172,16 +172,86 @@ def split_mixed(items):
     return zh_items, en_items
 
 
+# 常用中文句末标点, 用于把"一条中文覆盖多条英文"的长句拆开
+_ZH_SPLIT_RE = re.compile(r"([。！？!?；;…])")
+# 中英文空格 (半角/全角), 也是可拆边界
+_ZH_SPACE_RE = re.compile(r"([ 　]+)")
+# 英文句末标点 (用于判定可拆的英文边界)
+_EN_SPLIT_RE = re.compile(r"([.!?…])\s+")
+
+
+def _overlap(a_start, a_end, b_start, b_end):
+    """两条字幕的时间重叠量, 可为负(表示间隔, 间隔越近负值越大)"""
+    return min(a_end, b_end) - max(a_start, b_start)
+
+
+def _split_zh_by_count(text, n, en_items):
+    """把一条中文按 n 条英文的时长比例拆成 n 段。
+
+    优先按标点边界拆; 找不到足够标点时按字符数比例均分。
+    返回 list[str], 长度 == n。
+    """
+    if n <= 1:
+        return [text]
+    clean = _strip_tags(text).strip()
+    # 先按空格切成候选片段 (这句中文里的多个句子常以空格分隔)
+    space_parts = _ZH_SPACE_RE.split(clean)
+    space_segments = [s.strip() for s in space_parts if s and s.strip()]
+    # 再在每个空格片段内部按标点细分
+    segments = []
+    for seg in space_segments:
+        parts = _ZH_SPLIT_RE.split(seg)
+        buf = ""
+        for p in parts:
+            if not p:
+                continue
+            buf += p
+            if _ZH_SPLIT_RE.fullmatch(p):
+                segments.append(buf)
+                buf = ""
+        if buf:
+            segments.append(buf)
+    # 去掉纯标点/空段
+    segments = [s for s in segments if s and _has_cjk(s)]
+    if len(segments) >= n:
+        # 边界足够: 前 n-1 段各占一段, 最后一段合并剩余
+        head = segments[: n - 1]
+        tail = "".join(segments[n - 1:])
+        return head + [tail]
+    # 边界不够: 按英文字幕时长比例切字符 (尽量避免切断, 靠兜底保证非空)
+    total_dur = max(0.001, sum(max(0.0, e.end - e.start) for e in en_items))
+    result = []
+    pos = 0
+    for i, e in enumerate(en_items):
+        if i == n - 1:
+            result.append(clean[pos:] or clean)
+            break
+        ratio = max(0.0, e.end - e.start) / total_dur
+        cut = pos + max(1, int(len(clean) * ratio))
+        cut = min(cut, len(clean) - (n - 1 - i))  # 保证后续至少各 1 字符
+        result.append(clean[pos:cut])
+        pos = cut
+    # 兜底: 若产生空段则退化为整段
+    if any(not s.strip() for s in result):
+        return [clean]
+    return result
+
+
 def merge_dual(zh_items, en_items, gap=0.1, order="en_first", max_lines=2):
     """合并中英双语。返回 (merged_items, stats)。
 
     order: "en_first" 英文在上 / "zh_first" 中文在上
     max_lines: 每条字幕最多保留的行数 (2 = 英文一行 + 中文一行), 避免挡画面
+
+    对齐策略:
+    - 先做全局单调最优对齐(按时间重叠总量最大化), 避免贪心抢配对错位。
+    - 若一条中文覆盖多条英文(时间范围明显更长), 按标点/时长比例把它拆开,
+      分别配给各条英文 (解决"前一句中文提前出来、后一句只剩英文"的问题)。
+    - 一条英文覆盖多条中文时, 将多条中文做轻量合并。
     """
     zh_items = sorted(zh_items, key=lambda x: x.start)
     en_items = sorted(en_items, key=lambda x: x.start)
     merged = []
-    used_zh = set()
     # 统计
     paired = 0
     en_only = 0
@@ -196,32 +266,150 @@ def merge_dual(zh_items, en_items, gap=0.1, order="en_first", max_lines=2):
             parts = [p for p in (en_c, zh_c) if p]
         return "\n".join(parts)
 
-    for en in en_items:
-        best = None
-        best_key = -1.0
-        for i, zh in enumerate(zh_items):
-            if i in used_zh:
+    if not zh_items:
+        for en in en_items:
+            merged.append(SubtitleItem(en.start, en.end, compact_text(en.text, max_lines=max_lines)))
+            en_only += 1
+        merged.sort(key=lambda x: x.start)
+        stats = {"paired": 0, "en_only": en_only, "zh_only": 0, "total": len(merged)}
+        return merged, stats
+    if not en_items:
+        for zh in zh_items:
+            merged.append(SubtitleItem(zh.start, zh.end, compact_text(zh.text, max_lines=max_lines)))
+            zh_only += 1
+        merged.sort(key=lambda x: x.start)
+        stats = {"paired": 0, "en_only": 0, "zh_only": zh_only, "total": len(merged)}
+        return merged, stats
+
+    # ---- 第一步: 全局单调对齐 (1 对 1) ----
+    # dp[i][j] = 前 i 条英文与前 j 条中文的最大重叠总分
+    n, m = len(en_items), len(zh_items)
+    NEG = -1e18
+    dp = [[NEG] * (m + 1) for _ in range(n + 1)]
+    dp[0][0] = 0.0
+    for i in range(n + 1):
+        for j in range(m + 1):
+            if i > 0:
+                dp[i][j] = max(dp[i][j], dp[i - 1][j])  # 跳过这条英文(en_only)
+            if j > 0:
+                dp[i][j] = max(dp[i][j], dp[i][j - 1])  # 跳过这条中文(zh_only)
+            if i > 0 and j > 0:
+                score = dp[i - 1][j - 1] + _overlap(
+                    en_items[i - 1].start, en_items[i - 1].end,
+                    zh_items[j - 1].start, zh_items[j - 1].end,
+                )
+                if score > dp[i][j]:
+                    dp[i][j] = score
+
+    # 回溯得到配对列表 (en_idx, zh_idx)
+    pairs = []
+    used_en = set()
+    used_zh = set()
+    i, j = n, m
+    while i > 0 or j > 0:
+        if i > 0 and j > 0:
+            score_pair = dp[i - 1][j - 1] + _overlap(
+                en_items[i - 1].start, en_items[i - 1].end,
+                zh_items[j - 1].start, zh_items[j - 1].end,
+            )
+            if abs(dp[i][j] - score_pair) < 1e-9:
+                pairs.append((i - 1, j - 1))
+                used_en.add(i - 1)
+                used_zh.add(j - 1)
+                i -= 1
+                j -= 1
                 continue
-            overlap = min(en.end, zh.end) - max(en.start, zh.start)
-            if overlap > best_key:
-                best = i
-                best_key = overlap
-        # 接受 重叠 或 相邻(<gap)
-        if best is not None and best_key >= -gap:
-            used_zh.add(best)
-            zh = zh_items[best]
-            start = min(en.start, zh.start)
-            end = max(en.end, zh.end)
-            merged.append(SubtitleItem(start, end, _dual(en.text, zh.text)))
+        if i > 0 and abs(dp[i][j] - dp[i - 1][j]) < 1e-9:
+            i -= 1
+            continue
+        if j > 0 and abs(dp[i][j] - dp[i][j - 1]) < 1e-9:
+            j -= 1
+            continue
+        if i > 0:
+            i -= 1
+        if j > 0:
+            j -= 1
+    pairs.reverse()
+
+    # 过滤掉"几乎无重叠且间隔明显"的伪配对
+    for ei, zi in pairs:
+        ov = _overlap(en_items[ei].start, en_items[ei].end,
+                      zh_items[zi].start, zh_items[zi].end)
+        if ov < -gap:
+            used_en.discard(ei)
+            used_zh.discard(zi)
+
+    valid_pairs = [(ei, zi) for (ei, zi) in pairs
+                   if ei in used_en and zi in used_zh]
+
+    # ---- 第二步: 把"一条中文覆盖多条英文"的多对一关系展开 ----
+    # 先按中文分组, 统计每条中文被多少条英文引用/重叠
+    en2zh = {}
+    for ei, zi in valid_pairs:
+        en2zh[ei] = zi
+
+    # 找出每条中文"严格包含"的英文 (英文整段时间都落在中文时间段内)。
+    # 这类英文是被这条中文"吞掉"的多个句子, 需要把中文拆开分别配对。
+    zh_to_ens = {}
+    for zi, zh in enumerate(zh_items):
+        ens = [ei for ei, en in enumerate(en_items)
+               if en.start >= zh.start - gap and en.end <= zh.end + gap]
+        if ens:
+            zh_to_ens[zi] = ens
+
+    # 触发拆分: 一条中文严格包含 >=2 条英文
+    zh_split = {}   # zi -> list of (en_idx, zh_fragment)
+    for zi, eis in zh_to_ens.items():
+        if len(eis) < 2:
+            continue
+        zh = zh_items[zi]
+        ens = [en_items[ei] for ei in sorted(eis, key=lambda x: en_items[x].start)]
+        frags = _split_zh_by_count(zh.text, len(ens), ens)
+        zh_split[zi] = list(zip(sorted(eis), frags))
+
+    # ---- 第三步: 组装输出 ----
+    # 被拆分的英文集合: 每条用自己的时间轴, 只配对应中文片段
+    en_covered_by_split = set()
+    for zi, frags in zh_split.items():
+        for ei, frag in frags:
+            en_covered_by_split.add(ei)
+
+    for ei, en in enumerate(en_items):
+        zh_text = None
+        use_en_timing = False
+        if ei in en_covered_by_split:
+            # 拆分段: 英文用自己的时间轴, 配对应中文片段
+            for zi, frags in zh_split.items():
+                if ei in [x for x, _ in frags]:
+                    frag = next((t for x, t in frags if x == ei), None)
+                    if frag is not None:
+                        zh_text = frag
+                        use_en_timing = True
+                    break
+        elif ei in en2zh:
+            zi = en2zh[ei]
+            zh_text = zh_items[zi].text
+
+        if zh_text is not None:
+            if use_en_timing:
+                start, end = en.start, en.end
+            else:
+                start = min(en.start, zh_items[en2zh[ei]].start)
+                end = max(en.end, zh_items[en2zh[ei]].end)
+            merged.append(SubtitleItem(start, end, _dual(en.text, zh_text)))
             paired += 1
         else:
             merged.append(SubtitleItem(en.start, en.end, compact_text(en.text, max_lines=max_lines)))
             en_only += 1
 
-    for i, zh in enumerate(zh_items):
-        if i not in used_zh:
-            merged.append(SubtitleItem(zh.start, zh.end, compact_text(zh.text, max_lines=max_lines)))
-            zh_only += 1
+    # 剩余中文: 既未被拆分、也未作为 one-to-one 配对输出
+    consumed_zh = set(en2zh.values())
+    consumed_zh.update(zh_split.keys())
+    for zi, zh in enumerate(zh_items):
+        if zi in consumed_zh:
+            continue
+        merged.append(SubtitleItem(zh.start, zh.end, compact_text(zh.text, max_lines=max_lines)))
+        zh_only += 1
 
     merged.sort(key=lambda x: x.start)
     stats = {"paired": paired, "en_only": en_only, "zh_only": zh_only, "total": len(merged)}
