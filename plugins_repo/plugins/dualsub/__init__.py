@@ -15,6 +15,7 @@ import mimetypes
 import json
 import urllib.parse
 import urllib.request
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1119,6 +1120,14 @@ class DualSub(_PluginBase):
                 "auth": "bear",
                 "description": "删除旧字幕产物并重新加入处理队列, path=视频文件绝对路径",
             },
+            {
+                "path": "/cancel",
+                "endpoint": self.api_cancel,
+                "methods": ["GET"],
+                "summary": "取消任务",
+                "auth": "bear",
+                "description": "取消指定视频的排队任务, path=视频文件绝对路径",
+            },
         ]
 
     def _fetch_ai_models(self):
@@ -1187,25 +1196,62 @@ class DualSub(_PluginBase):
                 if old.exists():
                     old.unlink()
                     deleted.append(suffix)
-            # 清除相关历史记录状态, 允许重新入队
+            # 删除旧历史记录, 让 add_task 能正常入队
             if self._tasks:
-                for tid, t in list(self._tasks.items()):
-                    if t.get("video_file") == video_path:
-                        t["status"] = "pending"
-                        t["message"] = "重新生成中..."
-                        t["retry_count"] = 0
-            self.save_tasks()
+                for tid in list(self._tasks.keys()):
+                    if self._tasks[tid].get("video_file") == video_path:
+                        self._tasks.pop(tid, None)
+                self.save_tasks()
             # 加入队列
             added = self.add_task(video_path, "manual")
             if added:
                 logger.info(f"[DualSub] 重新生成: {video.name}, 删除 {deleted}")
                 return {"success": True, "message": f"已删除 {len(deleted)} 个旧文件, 重新加入队列"}
             else:
-                # add_task 返回 False 可能是已在队列中, 强制加入
-                return {"success": True, "message": "任务已在队列中"}
+                # 仍在队列中, 先清队列再加
+                if self._task_queue:
+                    with self._task_queue.mutex:
+                        self._task_queue.queue = deque(
+                            t for t in self._task_queue.queue if t.get("video_file") != video_path)
+                added = self.add_task(video_path, "manual")
+                if added:
+                    return {"success": True, "message": "已强制重新加入队列"}
+                return {"success": False, "message": "无法加入队列, 请稍后重试"}
         except Exception as e:
             logger.error(f"[DualSub] 重新生成失败: {e}")
             return {"success": False, "message": f"重新生成失败: {str(e)[:200]}"}
+
+    def api_cancel(self, path: str = ""):
+        """取消指定视频的排队任务"""
+        try:
+            video_path = unquote(path or "").strip()
+            if not video_path:
+                return {"success": False, "message": "缺少视频路径"}
+            removed = False
+            # 从队列移除
+            if self._task_queue:
+                with self._task_queue.mutex:
+                    new_q = deque(t for t in self._task_queue.queue if t.get("video_file") != video_path)
+                    if len(new_q) < len(self._task_queue.queue):
+                        removed = True
+                        self._task_queue.queue = new_q
+            # 更新历史记录状态
+            if self._tasks:
+                for tid, t in self._tasks.items():
+                    if t.get("video_file") == video_path:
+                        if t.get("status") in (TaskStatus.PENDING.value, TaskStatus.IN_PROGRESS.value):
+                            t["status"] = TaskStatus.IGNORED.value
+                            t["message"] = "已手动取消"
+                            removed = True
+                self.save_tasks()
+            if removed:
+                logger.info(f"[DualSub] 已取消任务: {Path(video_path).name}")
+                return {"success": True, "message": "已取消"}
+            else:
+                return {"success": False, "message": "未找到可取消的任务"}
+        except Exception as e:
+            logger.error(f"[DualSub] 取消任务失败: {e}")
+            return {"success": False, "message": f"取消失败: {str(e)[:200]}"}
 
     def api_browse(self, path: str = ""):
         """前端点'进入目录'按钮调用: 更新当前浏览路径, 前端 onAction 自动重载 get_page"""
@@ -2110,6 +2156,16 @@ class DualSub(_PluginBase):
                     "text": "重新生成",
                     "events": {
                         "click": {"api": f"plugin/DualSub/regenerate?path={quote(v['path'])}", "method": "get"}
+                    },
+                })
+            elif v["status"] in ("processing", "queued"):
+                right_content.append({
+                    "component": "VBtn",
+                    "props": {"color": "error", "variant": "tonal", "size": "small",
+                              "prepend-icon": "mdi-close-circle-outline"},
+                    "text": "取消",
+                    "events": {
+                        "click": {"api": f"plugin/DualSub/cancel?path={quote(v['path'])}", "method": "get"}
                     },
                 })
 
