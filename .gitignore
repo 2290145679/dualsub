@@ -1,11 +1,31 @@
-# 日志与缓存
-dualsub.log
+# Byte-compiled / optimized / DLL files
 __pycache__/
-*.pyc
-settings.json
+*.py[cod]
+*$py.class
+*.so
+
+# Caches and logs
+*.log
+*.sqlite
+*.db
+.pytest_cache/
+.coverage
+
+# Environments and IDE
+.env
+.env.*
+.venv/
+env/
+venv/
+.idea/
+.vscode/
+*.swp
 *.bak
-# 临时/测试
-*.tmp.srt
-*.dual.srt
-*.dual.mkv
-tmp/
+
+# Packaging and scratch
+*.tar
+*.tar.gz
+*.zip
+scratch/
+temp*/
+deploy.ps1

@@ -1,0 +1,28 @@
+{
+  "SubGenerator": {
+    "name": "双语字幕生成",
+    "description": "全自动为入库影片合成双语字幕(外挂ASS或封回MKV)，支持外挂与内嵌字幕智能嗅探、大模型缺失翻译补全、彩色排版预设色盘与媒体库可视化管理。",
+    "labels": "字幕,媒体库",
+    "version": "2.0.0",
+    "icon": "https://raw.githubusercontent.com/2290145679/dualsub/main/icons/subtitles.png",
+    "author": "wuzhennana",
+    "level": 1,
+    "v3": false,
+    "history": {
+      "v2.0.0": "升级2.0核心架构：支持外挂与内嵌智能嗅探、大模型缺失翻译补全、彩色排版预设色盘、时间轴微调与透明推送状态。"
+    }
+  },
+  "DualSub": {
+    "name": "双语字幕合并",
+    "description": "全自动为入库影片合成双语字幕(外挂ASS或封回MKV)，支持外挂与内嵌字幕智能嗅探、大模型缺失翻译补全、彩色排版预设色盘与媒体库可视化管理。",
+    "labels": "字幕,媒体库",
+    "version": "2.0.0",
+    "icon": "https://raw.githubusercontent.com/2290145679/dualsub/main/icons/subtitles.png",
+    "author": "wuzhennana",
+    "level": 1,
+    "v3": false,
+    "history": {
+      "v2.0.0": "升级2.0核心架构：支持外挂与内嵌智能嗅探、大模型缺失翻译补全、彩色排版预设色盘、时间轴微调与透明推送状态。"
+    }
+  }
+}

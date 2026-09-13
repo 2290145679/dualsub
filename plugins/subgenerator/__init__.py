@@ -1984,7 +1984,3 @@ class SubGenerator(_PluginBase):
                 models_container,
             ],
         }
-
-
-# 兼容旧版 DualSub 插件类名
-DualSub = SubGenerator
