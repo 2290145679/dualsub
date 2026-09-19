@@ -24,6 +24,7 @@ from .extractor import (
     is_track_mixed,
     split_mixed_track,
     check_native_bilingual,
+    is_bitmap_codec,
 )
 from .translator import AITranslator
 from .merger import merge_subtitles, dedup_overlap
@@ -126,24 +127,36 @@ def process_video_pipeline(
 
     logs.append(f"发现字幕源: 外挂 {len(ext_tracks)} 个, 内嵌 {len(emb_tracks)} 轨")
 
-    # 分类字幕轨并智能打分排序（优先对白轨、排除 SDH/CC 特效音轨、优先简体与同源轨）
+    # 分类字幕轨并智能打分排序（优先文本轨、优先对白轨、排除 SDH/CC、排斥图形位图轨）
     def score_zh(t: TrackInfo) -> int:
         score = 0
         t_low = (t.title or "").lower()
+        if is_bitmap_codec(t.codec):
+            score -= 500  # 图形位图字幕（PGS/VOBSUB）无法转文本
+        elif (t.codec or "").lower() in ("subrip", "srt", "ass", "ssa", "mov_text", "webvtt"):
+            score += 100  # 优先文本格式
         if "sdh" in t_low or "cc" in t_low:
             score -= 50
         if any(k in t_low for k in ("简", "chs", "hans", "simplified", "sg", "sc")):
             score += 30
-        if not t.is_external:
+        if t.is_external:
+            score += 50  # 优先外挂有效文本字幕
+        else:
             score += 10
         return score
 
     def score_en(t: TrackInfo) -> int:
         score = 0
         t_low = (t.title or "").lower()
+        if is_bitmap_codec(t.codec):
+            score -= 500  # 图形位图字幕无法转文本
+        elif (t.codec or "").lower() in ("subrip", "srt", "ass", "ssa", "mov_text", "webvtt"):
+            score += 100  # 优先文本格式
         if "sdh" in t_low or "cc" in t_low:
             score -= 50
-        if not t.is_external:
+        if t.is_external:
+            score += 50  # 优先外挂有效文本字幕
+        else:
             score += 10
         return score
 
@@ -195,22 +208,30 @@ def process_video_pipeline(
                     logs.append(f"单轨双语拆分: 中文 {len(split_zh)} 句 / 英文 {len(split_en)} 句")
 
         if not is_mixed_candidate:
-            # 优先提取已有的中文和英文
+            # 优先提取已有的中文和英文（按打分顺序逐轨尝试，避免某轨为PGS等不支持格式时直接中断）
             if zh_tracks:
-                ok, items, msg = extract_track_items(video, zh_tracks[0], tmp_path)
-                if ok:
-                    zh_items = items
-                    t_zh = zh_tracks[0]
-                    zh_desc = f"{'外挂' if t_zh.is_external else '内封#' + str(t_zh.index)} {t_zh.title or '中文字幕'} ({len(zh_items)} 句)"
-                    logs.append(f"中文源: {msg}")
+                for t in zh_tracks:
+                    ok, items, msg = extract_track_items(video, t, tmp_path)
+                    if ok and items:
+                        zh_items = items
+                        t_zh = t
+                        zh_desc = f"{'外挂' if t_zh.is_external else '内封#' + str(t_zh.index)} {t_zh.title or '中文字幕'} ({len(zh_items)} 句)"
+                        logs.append(f"中文源: {msg}")
+                        break
+                    else:
+                        logs.append(f"中文源候选轨 #{t.index if not t.is_external else '外挂'} 无法使用: {msg}")
 
             if en_tracks:
-                ok, items, msg = extract_track_items(video, en_tracks[0], tmp_path)
-                if ok:
-                    en_items = items
-                    t_en = en_tracks[0]
-                    en_desc = f"{'外挂' if t_en.is_external else '内封#' + str(t_en.index)} {t_en.title or '英文字幕'} ({len(en_items)} 句)"
-                    logs.append(f"英文源: {msg}")
+                for t in en_tracks:
+                    ok, items, msg = extract_track_items(video, t, tmp_path)
+                    if ok and items:
+                        en_items = items
+                        t_en = t
+                        en_desc = f"{'外挂' if t_en.is_external else '内封#' + str(t_en.index)} {t_en.title or '英文字幕'} ({len(en_items)} 句)"
+                        logs.append(f"英文源: {msg}")
+                        break
+                    else:
+                        logs.append(f"英文源候选轨 #{t.index if not t.is_external else '外挂'} 无法使用: {msg}")
 
         # 判定是否需要 AI 补全翻译
         ai_enabled = config.get("ai_enabled", False)
@@ -219,23 +240,36 @@ def process_video_pipeline(
             # 检查是否有日文或其他语言轨
             target_source_tracks = ja_tracks or other_tracks
             if target_source_tracks and ai_enabled and ai_translator:
-                ok, items, msg = extract_track_items(video, target_source_tracks[0], tmp_path)
-                if ok and items:
-                    lang_hint = "日文" if target_source_tracks == ja_tracks else "外文"
-                    logs.append(f"检测到纯{lang_hint}字幕，触发 AI 补全中文...")
-                    trans_zh = ai_translator.translate_subtitle_items(
-                        items, cache, logs, source_lang_hint=lang_hint
-                    )
-                    if trans_zh:
-                        zh_items = trans_zh
-                        en_items = items  # 次语言保留原语言
-                        ai_used = True
-                        zh_desc = f"AI {lang_hint}转中文 ({len(zh_items)} 句)"
-                        t_orig = target_source_tracks[0]
-                        en_desc = f"{'外挂' if t_orig.is_external else '内封#' + str(t_orig.index)} {t_orig.title or lang_hint} ({len(en_items)} 句)"
-                        ai_status = f"✅ 检测到纯{lang_hint}字幕，已调用 AI 翻译生成中文 ({len(zh_items)} 句)"
+                for t in target_source_tracks:
+                    ok, items, msg = extract_track_items(video, t, tmp_path)
+                    if ok and items:
+                        lang_hint = "日文" if t in ja_tracks else "外文"
+                        logs.append(f"检测到纯{lang_hint}字幕 (#{t.index if not t.is_external else '外挂'})，触发 AI 补全中文...")
+                        trans_zh = ai_translator.translate_subtitle_items(
+                            items, cache, logs, source_lang_hint=lang_hint
+                        )
+                        if trans_zh:
+                            zh_items = trans_zh
+                            en_items = items  # 次语言保留原语言
+                            ai_used = True
+                            zh_desc = f"AI {lang_hint}转中文 ({len(zh_items)} 句)"
+                            t_orig = t
+                            en_desc = f"{'外挂' if t_orig.is_external else '内封#' + str(t_orig.index)} {t_orig.title or lang_hint} ({len(en_items)} 句)"
+                            ai_status = f"✅ 检测到纯{lang_hint}字幕，已调用 AI 翻译生成中文 ({len(zh_items)} 句)"
+                            break
+                        else:
+                            logs.append(f"AI 补全 {lang_hint} 字幕失败")
+                    else:
+                        logs.append(f"外文候选轨 #{t.index if not t.is_external else '外挂'} 无法使用: {msg}")
+
             if not zh_items and not en_items:
-                return TaskStatus.IGNORED.value, "未能成功提取有效字幕文本", logs, {}
+                all_bitmap = bool(emb_tracks and all(is_bitmap_codec(t.codec) for t in emb_tracks) and not ext_tracks)
+                if all_bitmap:
+                    fail_msg = "片源内嵌字幕均为 PGS/图形位图字幕，不支持直接提取文本。请为该影片下载/刮削外挂 SRT/ASS 格式字幕后再试"
+                else:
+                    fail_msg = "未能成功提取有效字幕文本 (片源字幕轨无法解析或为空)"
+                logs.append(f"❌ {fail_msg}")
+                return TaskStatus.IGNORED.value, fail_msg, logs, {"ai_status": "无法提取文本字幕"}
 
         elif en_items and not zh_items:
             # 只有英文，缺少中文

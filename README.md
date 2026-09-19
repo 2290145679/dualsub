@@ -1,4 +1,4 @@
-# 🎬 SubGenerator 字幕生成 (MoviePilot 插件)
+# 🎬 SubGenerator 双语字幕生成 (MoviePilot 插件)
 
 [![MoviePilot Version](https://img.shields.io/badge/MoviePilot-v2-blue.svg)](https://github.com/jxxghp/MoviePilot)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -45,7 +45,7 @@
    ```text
    https://github.com/2290145679/dualsub
    ```
-4. 点击保存后，进入 **插件市场**，搜索并找到 **「字幕生成」**（或 **SubGenerator**）。
+4. 点击保存后，进入 **插件市场**，搜索并找到 **「双语字幕生成」**（或 **SubGenerator**）。
 5. 点击 **安装** 即可完成部署！
 
 ---

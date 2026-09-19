@@ -400,6 +400,12 @@ class SubGenerator(_PluginBase):
                                 title="片源自带双语字幕 (未重新生成)",
                                 text=f"🎬 影片：{Path(video_file).name}\nℹ️ 说明：{msg}",
                             )
+                        elif "PGS" in msg or "位图" in msg:
+                            self.post_message(
+                                mtype=NotificationType.Manual,
+                                title="双语字幕未生成 (片源为图形字幕)",
+                                text=f"🎬 影片：{Path(video_file).name}\n⚠️ 原因：{msg}",
+                            )
                         elif status == TaskStatus.FAILED.value:
                             self.post_message(
                                 mtype=NotificationType.Manual,

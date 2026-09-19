@@ -257,11 +257,12 @@ class AITranslator:
         if not self.model:
             return False, "请先选择要测试的节点/模型", 0
         t0 = time.time()
-        res, err = self.translate_batch([sample_text], source_lang_hint="英文")
+        test_items = [SubtitleItem(0.0, 1.0, sample_text)]
+        res = self.translate_subtitle_items(test_items, {}, [], source_lang_hint="英文")
         latency = int((time.time() - t0) * 1000)
-        if res and len(res) == 1 and res[0].strip():
-            return True, res[0].strip(), latency
-        return False, err or "翻译返回为空", latency
+        if res and len(res) == 1 and res[0].text.strip():
+            return True, res[0].text.strip(), latency
+        return False, "翻译返回为空或请求失败", latency
 
     @staticmethod
     def _parse_translations(raw_content: str) -> Dict[int, str]:

@@ -24,6 +24,23 @@ from .models import (
     strip_ass_tags,
 )
 
+BITMAP_SUBTITLE_CODECS = {
+    "hdmv_pgs_subtitle",
+    "pgs",
+    "dvd_subtitle",
+    "dvdsub",
+    "vobsub",
+    "xsub",
+}
+
+
+def is_bitmap_codec(codec: str) -> bool:
+    """判断字幕流编码是否为图形/位图字幕 (如 PGS、VOBSUB)，该类字幕无法直接用 ffmpeg 转文本。"""
+    if not codec:
+        return False
+    return codec.strip().lower() in BITMAP_SUBTITLE_CODECS
+
+
 
 def parse_srt(content: str | bytes) -> List[SubtitleItem]:
     """解析 SRT 字符串或字节为 SubtitleItem 列表。"""
@@ -297,6 +314,13 @@ def extract_track_items(
         return False, [], f"外挂字幕 {track.external_path.name} 为空或损坏"
 
     # 内嵌字幕流
+    if is_bitmap_codec(track.codec):
+        return (
+            False,
+            [],
+            f"内嵌字幕轨 #{track.index} 为图形位图字幕 ({track.codec})，非文本格式，无法直接转为文本",
+        )
+
     tmp_file = temp_dir / f"extract_{track.index}_{os.getpid()}.srt"
     try:
         ok, err = extract_stream_to_srt(video_path, track.index, tmp_file)
