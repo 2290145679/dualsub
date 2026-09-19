@@ -3,14 +3,14 @@
 
 import re
 from typing import List, Optional
-from .models import SubtitleItem, _fmt_srt_time, _fmt_ass_time, has_cjk
+from .models import SubtitleItem, _fmt_srt_time, _fmt_ass_time, has_cjk, clean_subtitle_text
 
 
 def render_srt(items: List[SubtitleItem]) -> str:
     """渲染标准 SRT 字幕格式。"""
     lines = []
     for idx, item in enumerate(items, 1):
-        clean_text = (item.text or "").replace("\u200b[AI]\u200b", "[AI] ")
+        clean_text = clean_subtitle_text(item.text or "").replace("\u200b[AI]\u200b", "[AI] ").strip()
         lines.append(f"{idx}\n{_fmt_srt_time(item.start)} --> {_fmt_srt_time(item.end)}\n{clean_text}\n")
     return "\n".join(lines)
 
@@ -101,9 +101,14 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 line = line.replace("\u200b[AI]\u200b", "")
                 ai_mark = "{\\c&H00FFFF&\\b1}[AI]{\\r}"
 
+            # 彻底去除 HTML 标签 (<i>, </i>, <b>, <font> 等) 及 ASS 标签，并解码 HTML 实体
+            cleaned_line = clean_subtitle_text(line).strip()
+            if not cleaned_line:
+                continue
+
             # 转义花括号与反斜杠
-            safe_text = line.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
-            if has_cjk(line):
+            safe_text = cleaned_line.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+            if has_cjk(cleaned_line):
                 prefix = f"{{\\rChinese}}{ai_mark}"
             else:
                 prefix = f"{{\\rEnglish}}{ai_mark}"

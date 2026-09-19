@@ -428,40 +428,86 @@ class SubGenerator(_PluginBase):
     # ---------------- 事件监听 ----------------
     @eventmanager.register(EventType.TransferComplete)
     def on_transfer_complete(self, event: MPEvent):
-        """监听入库整理完成事件，全自动触发生成。"""
+        """监听入库整理完成事件，全自动触发双语字幕生成。"""
         if not self._enabled or not self._listen_transfer_event:
             return
 
         event_data = event.event_data or {}
-        dest_file = (
-            event_data.get("dest_file")
-            or event_data.get("file_path")
-            or event_data.get("target_path")
-            or event_data.get("item_path")
-            or ""
-        )
-        if not dest_file:
+        candidate_paths: List[str] = []
+
+        # 1. 从 transferinfo 中提取转移出的文件列表 (MoviePilot 转移链标准对象)
+        transferinfo = event_data.get("transferinfo")
+        if transferinfo:
+            file_list = getattr(transferinfo, "file_list_new", None) or []
+            if isinstance(file_list, (list, tuple)):
+                candidate_paths.extend([str(p) for p in file_list if p])
+
+            target_files = getattr(transferinfo, "target_files", None) or []
+            if isinstance(target_files, (list, tuple)):
+                candidate_paths.extend([str(p) for p in target_files if p])
+
+            t_path = getattr(transferinfo, "target_path", None)
+            if t_path:
+                candidate_paths.append(str(t_path))
+
+            t_diritem = getattr(transferinfo, "target_diritem", None)
+            if t_diritem and hasattr(t_diritem, "path") and t_diritem.path:
+                candidate_paths.append(str(t_diritem.path))
+
+        # 2. 从 fileitem 中提取文件路径
+        fileitem = event_data.get("fileitem")
+        if fileitem:
+            for attr in ("target_path", "path", "file_path"):
+                val = getattr(fileitem, attr, None)
+                if val:
+                    candidate_paths.append(str(val))
+
+        # 3. 兼容直接传入的顶层字典字段
+        for k in ("dest_file", "file_path", "target_path", "item_path", "path"):
+            val = event_data.get(k)
+            if val:
+                candidate_paths.append(str(val))
+
+        file_list_direct = event_data.get("file_list") or event_data.get("file_list_new")
+        if isinstance(file_list_direct, (list, tuple)):
+            candidate_paths.extend([str(p) for p in file_list_direct if p])
+
+        if not candidate_paths:
             return
 
-        dest_path = Path(dest_file)
-        if dest_path.is_dir():
-            # 目录下递归发现视频
-            for f in dest_path.rglob("*"):
-                if f.is_file() and f.suffix.lower() in VIDEO_EXTS:
-                    self._check_and_add_event_task(str(f))
-        elif dest_path.is_file() and dest_path.suffix.lower() in VIDEO_EXTS:
-            self._check_and_add_event_task(str(dest_path))
+        # 去重并解析为视频路径
+        seen = set()
+        for raw_p in candidate_paths:
+            p_str = str(raw_p).strip()
+            if not p_str or p_str in seen:
+                continue
+            seen.add(p_str)
+            p = Path(p_str)
+            try:
+                if p.is_file() and p.suffix.lower() in VIDEO_EXTS:
+                    self._check_and_add_event_task(str(p))
+                elif p.is_dir():
+                    for f in p.rglob("*"):
+                        if f.is_file() and f.suffix.lower() in VIDEO_EXTS:
+                            self._check_and_add_event_task(str(f))
+            except Exception as e:
+                logger.warn(f"[字幕生成] 检查入库事件路径异常 {p_str}: {e}")
 
     def _check_and_add_event_task(self, video_path: str):
-        # 检查白名单目录
+        v_norm = Path(video_path).as_posix()
+        # 检查监控目录
         if self._transfer_paths:
             allowed_prefixes = [
-                p.strip() for p in self._transfer_paths.splitlines() if p.strip()
+                Path(p.strip()).as_posix().rstrip("/")
+                for p in self._transfer_paths.splitlines()
+                if p.strip()
             ]
             if allowed_prefixes and not any(
-                video_path.startswith(prefix) for prefix in allowed_prefixes
+                v_norm.startswith(prefix) for prefix in allowed_prefixes
             ):
+                logger.debug(f"[字幕生成] 整理文件 {video_path} 不在设定监控目录内，跳过")
                 return
+        logger.info(f"[字幕生成] 监听到入库整理完成，自动触发字幕任务: {video_path}")
         self.add_task(video_path, source=TaskSource.EVENT.value)
 
     # ---------------- 持久化读写 ----------------

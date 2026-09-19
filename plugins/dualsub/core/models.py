@@ -77,9 +77,28 @@ def has_japanese(text: str) -> bool:
     return bool(_JA_RE.search(text or ""))
 
 
+import html
+
+# HTML 样式标签 (<i>, </i>, <b>, </b>, <font ...>, <u>, etc.)
+_HTML_TAG_RE = re.compile(r"</?[a-zA-Z]+(?:\s+[^>]*)?>")
+
+
+def clean_subtitle_text(text: str) -> str:
+    """彻底去除字幕中的 ASS/SSA 特效标签 {\\an8}、HTML 样式标签 (<i>, <b>, <font> 等)，并解码 HTML 字符实体。"""
+    if not text:
+        return ""
+    # 去除 ASS 特效标签 {\...}
+    t = _TAG_RE.sub("", text)
+    # 去除 HTML 标签 <i>, </i>, <b>, <font ...> 等
+    t = _HTML_TAG_RE.sub("", t)
+    # 解码 HTML 字符实体如 &amp;, &nbsp;, &lt;, &gt;, &#39;
+    t = html.unescape(t)
+    return t
+
+
 def strip_ass_tags(text: str) -> str:
-    """去除 ASS/SSA 覆盖标记 {\\an8} 等, 保留纯文本"""
-    return _TAG_RE.sub("", text or "")
+    """去除 ASS/SSA 覆盖标记及 HTML 标签，保留纯净文本"""
+    return clean_subtitle_text(text)
 
 
 def is_chinese_lang(lang: str) -> bool:

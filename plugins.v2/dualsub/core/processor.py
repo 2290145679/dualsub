@@ -112,7 +112,8 @@ def process_video_pipeline(
     mode = config.get("mode", "srt")  # srt (外挂) | mux (封回) | both (外挂+封回)
     order = config.get("order", "zh_first")  # zh_first | en_first
 
-    if skip_if_exists and has_existing_dual_subtitle(video, sub_suffix):
+    is_force = bool(config.get("force", False) or config.get("source") == "manual_regen")
+    if not is_force and skip_if_exists and has_existing_dual_subtitle(video, sub_suffix):
         return TaskStatus.IGNORED.value, "已存在双语字幕，跳过处理", logs, {}
 
     logs.append(f"开始处理: {video.name}")

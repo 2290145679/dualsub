@@ -86,8 +86,8 @@ def parse_srt(content: str | bytes) -> List[SubtitleItem]:
         start = _to_seconds(s_h, s_m, s_s, s_ms)
         end = _to_seconds(e_h, e_m, e_s, e_ms)
 
-        text_lines = lines[1:]
-        text = "\n".join(text_lines).strip()
+        text_lines = [strip_ass_tags(tl) for tl in lines[1:]]
+        text = "\n".join([tl for tl in text_lines if tl.strip()]).strip()
         if text:
             items.append(SubtitleItem(start, end, text))
     return items
